@@ -37,6 +37,7 @@
   "build": {
     "appId": "au.com.budgetbitch.app",
     "productName": "Budget Bitch!",
+    "afterPack": "electron/after-pack.mjs",
     "asar": false,
     "directories": {
       "output": "release"
