@@ -43,6 +43,54 @@
   padding: 18px 22px;
 }
 
+.category-manager {
+  align-items: end;
+  background: #f6f7fb;
+  border: 1px solid #e4e6ef;
+  border-radius: 12px;
+  display: grid;
+  gap: 16px;
+  grid-template-columns: 1fr auto auto;
+  margin-bottom: 18px;
+  padding: 16px;
+}
+
+.category-manager span {
+  color: var(--indigo);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .12em;
+}
+
+.category-manager h3 {
+  font: 700 15px Manrope;
+  margin: 4px 0 0;
+}
+
+.category-manager form {
+  display: flex;
+  gap: 6px;
+}
+
+.category-manager input,
+.category-manager select {
+  background: white;
+  border: 1px solid #dfe2e5;
+  border-radius: 8px;
+  min-height: 38px;
+  padding: 0 10px;
+}
+
+.category-manager button {
+  background: var(--ink);
+  border: 0;
+  border-radius: 8px;
+  color: white;
+  font-size: 11px;
+  font-weight: 700;
+  padding: 0 12px;
+}
+
 .category-toolbar {
   align-items: center;
   display: grid;
@@ -100,7 +148,7 @@
   display: grid;
   font-size: 12px;
   gap: 12px;
-  grid-template-columns: 24px 110px minmax(250px, 1fr) 100px 160px 120px;
+  grid-template-columns: 24px 105px minmax(230px, 1fr) 90px 145px 145px 110px;
   min-height: 54px;
 }
 
@@ -202,6 +250,15 @@
 
   .category-toolbar {
     grid-template-columns: 1fr;
+  }
+
+  .category-manager {
+    align-items: stretch;
+    grid-template-columns: 1fr;
+  }
+
+  .category-manager form {
+    flex-wrap: wrap;
   }
 
   .bulk-tools {

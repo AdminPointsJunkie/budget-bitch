@@ -24,6 +24,20 @@ database.exec(`
 if (!database.prepare("PRAGMA table_info(transactions)").all().some(column=>column.name==="is_subscription")) {
   database.exec("ALTER TABLE transactions ADD COLUMN is_subscription INTEGER NOT NULL DEFAULT 0");
 }
+if (!database.prepare("PRAGMA table_info(transactions)").all().some(column=>column.name==="subcategory")) {
+  database.exec("ALTER TABLE transactions ADD COLUMN subcategory TEXT NOT NULL DEFAULT ''");
+}
+database.exec(`
+  CREATE TABLE IF NOT EXISTS categories (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    parent_id INTEGER REFERENCES categories(id) ON DELETE CASCADE,
+    UNIQUE(name, parent_id)
+  )
+`);
+const defaultCategories = ["Housing","Groceries","Dining","Transport","Utilities","Shopping","Entertainment","Health","Insurance","Transfers","Income","Other"];
+const seedCategory = database.prepare("INSERT OR IGNORE INTO categories (name, parent_id) VALUES (?, NULL)");
+defaultCategories.forEach(name=>seedCategory.run(name));
 
 function readBody(req, limit = 30 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
@@ -71,37 +85,56 @@ function localDataServices() {
       server.middlewares.use("/api/transactions", async (req, res, next) => {
         try {
           if (req.method === "GET" && req.url === "/") {
-            const rows = database.prepare("SELECT id, tx_date AS date, description, category, amount, source, is_subscription AS isSubscription FROM transactions ORDER BY tx_date, id").all();
+            const rows = database.prepare("SELECT id, tx_date AS date, description, category, subcategory, amount, source, is_subscription AS isSubscription FROM transactions ORDER BY tx_date, id").all();
             return sendJson(res, {transactions:rows});
           }
           if (req.method === "POST" && req.url === "/") {
             const { transactions = [] } = JSON.parse((await readBody(req)).toString());
-            const insert = database.prepare("INSERT OR IGNORE INTO transactions (tx_date, description, category, amount, source, fingerprint, is_subscription) VALUES (?, ?, ?, ?, ?, ?, ?)");
+            const insert = database.prepare("INSERT OR IGNORE INTO transactions (tx_date, description, category, subcategory, amount, source, fingerprint, is_subscription) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
             database.exec("BEGIN");
             try {
               for (const transaction of transactions) {
                 const source = transaction.source || "";
                 const fingerprint = `${transaction.date}|${transaction.description}|${Number(transaction.amount).toFixed(2)}|${source}`;
-                insert.run(transaction.date, transaction.description, transaction.category, transaction.amount, source, fingerprint, transaction.isSubscription?1:0);
+                insert.run(transaction.date, transaction.description, transaction.category, transaction.subcategory||"", transaction.amount, source, fingerprint, transaction.isSubscription?1:0);
               }
               database.exec("COMMIT");
             } catch (error) {
               database.exec("ROLLBACK");
               throw error;
             }
-            const rows = database.prepare("SELECT id, tx_date AS date, description, category, amount, source, is_subscription AS isSubscription FROM transactions ORDER BY tx_date, id").all();
+            const rows = database.prepare("SELECT id, tx_date AS date, description, category, subcategory, amount, source, is_subscription AS isSubscription FROM transactions ORDER BY tx_date, id").all();
             return sendJson(res, {transactions:rows}, 201);
           }
           const match = req.url.match(/^\/(\d+)$/);
           if (req.method === "PATCH" && match) {
             const changes = JSON.parse((await readBody(req, 1024 * 20)).toString());
             if (changes.category !== undefined) database.prepare("UPDATE transactions SET category = ? WHERE id = ?").run(changes.category, Number(match[1]));
+            if (changes.subcategory !== undefined) database.prepare("UPDATE transactions SET subcategory = ? WHERE id = ?").run(changes.subcategory, Number(match[1]));
             if (changes.isSubscription !== undefined) database.prepare("UPDATE transactions SET is_subscription = ? WHERE id = ?").run(changes.isSubscription?1:0, Number(match[1]));
             return sendJson(res, {ok:true});
           }
           next();
         } catch (error) {
           sendJson(res, {error:error.message}, 400);
+        }
+      });
+      server.middlewares.use("/api/categories", async (req, res, next) => {
+        try {
+          if (req.method === "GET" && req.url === "/") {
+            const rows=database.prepare("SELECT id, name, parent_id AS parentId FROM categories ORDER BY parent_id IS NOT NULL, name").all();
+            return sendJson(res,{categories:rows});
+          }
+          if (req.method === "POST" && req.url === "/") {
+            const {name,parentId=null}=JSON.parse((await readBody(req,1024*20)).toString());
+            if (!String(name||"").trim()) return sendJson(res,{error:"Name is required"},400);
+            database.prepare("INSERT OR IGNORE INTO categories (name,parent_id) VALUES (?,?)").run(String(name).trim(),parentId||null);
+            const rows=database.prepare("SELECT id, name, parent_id AS parentId FROM categories ORDER BY parent_id IS NOT NULL, name").all();
+            return sendJson(res,{categories:rows},201);
+          }
+          next();
+        } catch(error) {
+          sendJson(res,{error:error.message},400);
         }
       });
     }
