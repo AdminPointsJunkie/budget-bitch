@@ -195,28 +195,16 @@ async function parseFile(file) {
     });
   }
   if (ext === "pdf") {
-    let pdfjs;
-    try {
-      pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-    } catch {
-      throw new Error("The PDF reader could not start in this browser. Export this statement as CSV or OFX and try again.");
+    const response = await fetch("/api/parse-pdf", {
+      method:"POST",
+      headers:{"Content-Type":"application/pdf"},
+      body:await file.arrayBuffer()
+    });
+    if (!response.ok) {
+      const detail = await response.json().catch(()=>({}));
+      throw new Error(detail.error || "The local PDF reader could not extract this statement.");
     }
-    // Disable the worker for maximum compatibility with embedded browsers.
-    const document = await pdfjs.getDocument({data:new Uint8Array(await file.arrayBuffer()),disableWorker:true}).promise;
-    const lines = [];
-    for (let pageNumber=1; pageNumber<=document.numPages; pageNumber++) {
-      const page = await document.getPage(pageNumber);
-      const content = await page.getTextContent();
-      const grouped = new Map();
-      content.items.forEach(item => {
-        const y = Math.round(item.transform[5]/2)*2;
-        if (!grouped.has(y)) grouped.set(y,[]);
-        grouped.get(y).push({x:item.transform[4],str:item.str});
-      });
-      [...grouped.entries()].sort((a,b)=>b[0]-a[0]).forEach(([,items]) => {
-        lines.push(items.sort((a,b)=>a.x-b.x).map(item=>item.str).join(" "));
-      });
-    }
+    const { lines } = await response.json();
     const rows = parsePdfStatement(lines);
     if (!rows.length) throw new Error("This PDF layout could not be read reliably. Try exporting the statement as CSV, Excel or OFX.");
     return rows;
