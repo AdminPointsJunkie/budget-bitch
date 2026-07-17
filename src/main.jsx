@@ -461,7 +461,7 @@ function Categorise({rows,categories:categoryRecords,onAddCategory,onCategoryCha
   const [newCategory,setNewCategory]=useState("");
   const [newSubcategory,setNewSubcategory]=useState("");
   const [parentCategory,setParentCategory]=useState("");
-  const parents=categoryRecords.filter(category=>!category.parentId);
+  const parents=categoryRecords.filter(category=>!category.parentId).filter((category,index,array)=>array.findIndex(item=>item.name===category.name)===index);
   const categories=parents.map(category=>category.name);
   const childrenFor=name=>{const parent=parents.find(category=>category.name===name);return parent?categoryRecords.filter(category=>category.parentId===parent.id):[]};
   const recurring=subscriptionKeys(rows);

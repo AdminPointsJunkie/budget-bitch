@@ -38,6 +38,18 @@ database.exec(`
     UNIQUE(name, parent_id)
   )
 `);
+const duplicateParents = database.prepare("SELECT name, MIN(id) AS keep_id FROM categories WHERE parent_id IS NULL GROUP BY name HAVING COUNT(*) > 1").all();
+for (const duplicate of duplicateParents) {
+  const duplicateIds = database.prepare("SELECT id FROM categories WHERE parent_id IS NULL AND name = ? AND id != ?").all(duplicate.name, duplicate.keep_id);
+  for (const {id} of duplicateIds) {
+    const children = database.prepare("SELECT name FROM categories WHERE parent_id = ?").all(id);
+    for (const child of children) database.prepare("INSERT OR IGNORE INTO categories (name, parent_id) VALUES (?, ?)").run(child.name, duplicate.keep_id);
+    database.prepare("DELETE FROM categories WHERE parent_id = ?").run(id);
+    database.prepare("DELETE FROM categories WHERE id = ?").run(id);
+  }
+}
+database.exec("DELETE FROM categories WHERE id NOT IN (SELECT MIN(id) FROM categories GROUP BY name, COALESCE(parent_id, 0))");
+database.exec("CREATE UNIQUE INDEX IF NOT EXISTS categories_unique_name_parent ON categories(name, COALESCE(parent_id, 0))");
 const defaultCategories = ["Housing","Groceries","Dining","Transport","Utilities","Shopping","Entertainment","Health","Insurance","Transfers","Income","Other"];
 const seedCategory = database.prepare("INSERT OR IGNORE INTO categories (name, parent_id) VALUES (?, NULL)");
 defaultCategories.forEach(name=>seedCategory.run(name));
