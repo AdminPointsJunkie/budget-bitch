@@ -82,7 +82,7 @@ database.exec("DELETE FROM categories WHERE id NOT IN (SELECT MIN(id) FROM categ
 database.exec("CREATE UNIQUE INDEX IF NOT EXISTS categories_unique_name_parent ON categories(name, COALESCE(parent_id, 0))");
 const defaultCategories = ["Housing","Groceries","Dining","Transport","Utilities","Shopping","Entertainment","Health","Insurance","Transfers","Income","Other"];
 const seedCategory = database.prepare("INSERT OR IGNORE INTO categories (name, parent_id) VALUES (?, NULL)");
-defaultCategories.forEach(name=>seedCategory.run(name));
+if (!database.prepare("SELECT COUNT(*) AS count FROM categories").get().count) defaultCategories.forEach(name=>seedCategory.run(name));
 
 function readBody(req, limit = 30 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
@@ -166,6 +166,20 @@ function localDataServices() {
             }
             return sendJson(res,{ok:true,updated:validIds.length});
           }
+          if (req.method === "DELETE" && req.url === "/bulk") {
+            const {ids=[]}=JSON.parse((await readBody(req,1024*1024)).toString());
+            const validIds=[...new Set(ids.map(Number).filter(Number.isInteger))];
+            const remove=database.prepare("DELETE FROM transactions WHERE id = ?");
+            database.exec("BEGIN");
+            try {
+              for (const id of validIds) remove.run(id);
+              database.exec("COMMIT");
+            } catch(error) {
+              database.exec("ROLLBACK");
+              throw error;
+            }
+            return sendJson(res,{ok:true,deleted:validIds.length});
+          }
           const match = req.url.match(/^\/(\d+)$/);
           if (req.method === "PATCH" && match) {
             const changes = JSON.parse((await readBody(req, 1024 * 20)).toString());
@@ -174,6 +188,10 @@ function localDataServices() {
             if (changes.isSubscription !== undefined) database.prepare("UPDATE transactions SET is_subscription = ? WHERE id = ?").run(changes.isSubscription?1:0, Number(match[1]));
             if (changes.isExcluded !== undefined) database.prepare("UPDATE transactions SET is_excluded = ? WHERE id = ?").run(changes.isExcluded?1:0, Number(match[1]));
             return sendJson(res, {ok:true});
+          }
+          if (req.method === "DELETE" && match) {
+            database.prepare("DELETE FROM transactions WHERE id = ?").run(Number(match[1]));
+            return sendJson(res,{ok:true});
           }
           next();
         } catch (error) {
@@ -192,6 +210,21 @@ function localDataServices() {
             database.prepare("INSERT OR IGNORE INTO categories (name,parent_id) VALUES (?,?)").run(String(name).trim(),parentId||null);
             const rows=database.prepare("SELECT id, name, parent_id AS parentId FROM categories ORDER BY parent_id IS NOT NULL, name").all();
             return sendJson(res,{categories:rows},201);
+          }
+          const match=req.url.match(/^\/(\d+)$/);
+          if (req.method === "DELETE" && match) {
+            const category=database.prepare("SELECT id, name, parent_id AS parentId FROM categories WHERE id = ?").get(Number(match[1]));
+            if (!category) return sendJson(res,{error:"Category not found"},404);
+            if (!category.parentId && category.name==="Other") return sendJson(res,{error:"Other is the fallback category and cannot be deleted"},400);
+            if (category.parentId) {
+              const parent=database.prepare("SELECT name FROM categories WHERE id = ?").get(category.parentId);
+              if (parent) database.prepare("UPDATE transactions SET subcategory = '' WHERE category = ? AND subcategory = ?").run(parent.name,category.name);
+            } else {
+              database.prepare("UPDATE transactions SET category = 'Other', subcategory = '' WHERE category = ?").run(category.name);
+            }
+            database.prepare("DELETE FROM categories WHERE id = ?").run(category.id);
+            const rows=database.prepare("SELECT id, name, parent_id AS parentId FROM categories ORDER BY parent_id IS NOT NULL, name").all();
+            return sendJson(res,{categories:rows});
           }
           next();
         } catch(error) {

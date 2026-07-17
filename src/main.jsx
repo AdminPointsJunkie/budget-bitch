@@ -8,7 +8,7 @@ import autoTable from "jspdf-autotable";
 import {
   ArrowRight, BarChart3, Check, ChevronRight, Download, EyeOff, FileSpreadsheet,
   FileText, Landmark, LockKeyhole, PieChart, RefreshCw, ShieldCheck,
-  Sparkles, Star, Target, TrendingDown, UploadCloud, WalletCards, X
+  Sparkles, Star, Target, Trash2, TrendingDown, UploadCloud, WalletCards, X
 } from "lucide-react";
 import "./styles.css";
 import "./filters.css";
@@ -342,15 +342,15 @@ function App() {
     [txSheet,budgetSheet].forEach(sheet => { sheet.getRow(1).font={bold:true,color:{argb:"FFFFFFFF"}}; sheet.getRow(1).fill={type:"pattern",pattern:"solid",fgColor:{argb:"FF17202C"}}; });
     const blob = new Blob([await wb.xlsx.writeBuffer()],{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
     const href = URL.createObjectURL(blob);
-    const link = document.createElement("a"); link.href=href; link.download="ledgerly-budget.xlsx"; link.click(); URL.revokeObjectURL(href);
+    const link = document.createElement("a"); link.href=href; link.download="budget-bitch.xlsx"; link.click(); URL.revokeObjectURL(href);
   }
   function exportPdf() {
     const doc = new jsPDF();
-    doc.setFontSize(22); doc.text("Ledgerly spending report",14,20);
+    doc.setFontSize(22); doc.text("Budget Bitch! spending report",14,20);
     doc.setFontSize(10); doc.setTextColor(100); doc.text(`Generated ${new Date().toLocaleDateString("en-AU")} • ${filteredTransactions.length} transactions`,14,28);
     doc.setTextColor(25); doc.setFontSize(13); doc.text(`Average monthly spend: ${fmt.format(analysis.average)}`,14,40);
     autoTable(doc,{startY:48,head:[["Category","Total","Monthly average"]],body:Object.entries(analysis.byCategory).sort((a,b)=>b[1]-a[1]).map(([c,v])=>[c,fmt.format(v),fmt.format(v/analysis.months.length)])});
-    doc.save("ledgerly-report.pdf");
+    doc.save("budget-bitch-report.pdf");
   }
   const sameTransaction = (transaction,row) => row.id ? transaction.id===row.id : transaction===row;
   async function updateCategory(row,value) {
@@ -391,6 +391,30 @@ function App() {
     if (!response.ok) throw new Error(data.error||"Could not add category");
     setCustomCategories(data.categories);
   }
+  async function deleteCategory(id) {
+    const response=await fetch(`/api/categories/${id}`,{method:"DELETE"});
+    const data=await response.json();
+    if (!response.ok) throw new Error(data.error||"Category could not be deleted");
+    setCustomCategories(data.categories);
+    const stored=await fetch("/api/transactions").then(result=>result.json());
+    setTransactions(stored.transactions||[]);
+  }
+  async function deleteTransaction(row) {
+    if (row.id) {
+      const response=await fetch(`/api/transactions/${row.id}`,{method:"DELETE"});
+      if (!response.ok) throw new Error("Transaction could not be deleted");
+    }
+    setTransactions(current=>current.filter(transaction=>!sameTransaction(transaction,row)));
+  }
+  async function deleteTransactions(rows) {
+    const ids=rows.map(row=>row.id).filter(Boolean);
+    if (ids.length) {
+      const response=await fetch("/api/transactions/bulk",{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({ids})});
+      if (!response.ok) throw new Error("Transactions could not be deleted");
+    }
+    const keys=new Set(ids);
+    setTransactions(current=>current.filter(transaction=>transaction.id?!keys.has(transaction.id):!rows.includes(transaction)));
+  }
   async function updateSubscription(row,value) {
     const previous=row.isSubscription;
     setTransactions(current => current.map(transaction => sameTransaction(transaction,row) ? {...transaction,isSubscription:value?1:0} : transaction));
@@ -411,12 +435,12 @@ function App() {
       throw new Error("Excluded status could not be saved");
     }
   }
-  if (view === "dashboard") return <Dashboard {...{transactions:filteredTransactions,totalTransactions:transactions.length,updateCategory,updateSubcategory,updateBulkCategory,updateSubscription,updateExcluded,customCategories,addCategory,analysis,tab,setTab,fileNames,exportExcel,exportPdf,availableMonths,dateFrom,setDateFrom,dateTo,setDateTo,onReset:()=>{setView("landing");setTransactions([]);setDateFrom("");setDateTo("")}}}/>;
+  if (view === "dashboard") return <Dashboard {...{transactions:filteredTransactions,totalTransactions:transactions.length,updateCategory,updateSubcategory,updateBulkCategory,updateSubscription,updateExcluded,deleteTransaction,deleteTransactions,customCategories,addCategory,deleteCategory,analysis,tab,setTab,fileNames,exportExcel,exportPdf,availableMonths,dateFrom,setDateFrom,dateTo,setDateTo,onReset:()=>{setView("landing");setTransactions([]);setDateFrom("");setDateTo("")}}}/>;
   return <Landing {...{input,handleFiles,loading,error,dragging,setDragging,onSample:()=>{setTransactions(sample);setFileNames(["Sample statement"]);setView("dashboard")}}}/>;
 }
 
 function Brand() {
-  return <div className="brand"><span className="brandmark"><BarChart3 size={20}/></span><span>Ledgerly</span></div>;
+  return <div className="brand"><span className="brandmark"><BarChart3 size={20}/></span><span>Budget Bitch!</span></div>;
 }
 function Landing({input,handleFiles,loading,error,dragging,setDragging,onSample}) {
   return <div className="landing">
@@ -452,12 +476,12 @@ function Landing({input,handleFiles,loading,error,dragging,setDragging,onSample}
         <Step n="03" icon={<Target/>} title="Build a better month" text="See patterns, adjust category targets and export a practical budget."/>
       </div>
     </section>
-    <section className="privacy" id="privacy"><ShieldCheck size={34}/><div><h3>Your financial data stays yours.</h3><p>Ledgerly analyses files locally in your browser. Your statement data is never uploaded or retained.</p></div></section>
+    <section className="privacy" id="privacy"><ShieldCheck size={34}/><div><h3>Your financial data stays yours.</h3><p>Budget Bitch! analyses files locally in your browser. Your statement data is never uploaded or retained.</p></div></section>
   </div>;
 }
 function Step({n,icon,title,text}) { return <article className="step"><span className="step-number">{n}</span><div className="step-icon">{icon}</div><h3>{title}</h3><p>{text}</p></article> }
 
-function Dashboard({transactions,totalTransactions,updateCategory,updateSubcategory,updateBulkCategory,updateSubscription,updateExcluded,customCategories,addCategory,analysis,tab,setTab,fileNames,exportExcel,exportPdf,availableMonths,dateFrom,setDateFrom,dateTo,setDateTo,onReset}) {
+function Dashboard({transactions,totalTransactions,updateCategory,updateSubcategory,updateBulkCategory,updateSubscription,updateExcluded,deleteTransaction,deleteTransactions,customCategories,addCategory,deleteCategory,analysis,tab,setTab,fileNames,exportExcel,exportPdf,availableMonths,dateFrom,setDateFrom,dateTo,setDateTo,onReset}) {
   const cats = Object.entries(analysis.byCategory).sort((a,b)=>b[1]-a[1]);
   const donut = {labels:cats.map(x=>x[0]),datasets:[{data:cats.map(x=>x[1]),backgroundColor:COLORS,borderWidth:0,hoverOffset:6}]};
   const bars = {labels:analysis.monthly.map(x=>new Date(x.month+"-02").toLocaleDateString("en-AU",{month:"short"})),datasets:[{label:"Income",data:analysis.monthly.map(x=>x.income),backgroundColor:"#B9E9DE",borderRadius:7},{label:"Spending",data:analysis.monthly.map(x=>x.expense),backgroundColor:"#6574F7",borderRadius:7}]};
@@ -472,7 +496,7 @@ function Dashboard({transactions,totalTransactions,updateCategory,updateSubcateg
       <section className="panel table-panel"><div className="panel-title"><div><span>CATEGORY &amp; SUBCATEGORY DETAIL</span><h3>Your spending, ranked</h3></div></div><CategoryTable cats={cats} subcategories={analysis.bySubcategory} months={monthCount} total={analysis.expenses}/></section></>}
       {tab==="budget" && <Budget cats={cats} months={monthCount} income={analysis.income/monthCount}/>}
       {tab==="transactions" && <Transactions rows={transactions} onCategoryChange={updateCategory}/>}
-      {tab==="categorise" && <Categorise rows={transactions} categories={customCategories} onAddCategory={addCategory} onCategoryChange={updateCategory} onSubcategoryChange={updateSubcategory} onBulkCategoryChange={updateBulkCategory} onSubscriptionChange={updateSubscription} onExcludedChange={updateExcluded}/>}
+      {tab==="categorise" && <Categorise rows={transactions} categories={customCategories} onAddCategory={addCategory} onDeleteCategory={deleteCategory} onCategoryChange={updateCategory} onSubcategoryChange={updateSubcategory} onBulkCategoryChange={updateBulkCategory} onSubscriptionChange={updateSubscription} onExcludedChange={updateExcluded} onDeleteTransaction={deleteTransaction} onDeleteTransactions={deleteTransactions}/>}
     </div>
   </div>;
 }
@@ -503,7 +527,7 @@ function Transactions({rows,onCategoryChange}) {
   const ordered=rows.slice().reverse(),paged=ordered.slice(page*PAGE_SIZE,(page+1)*PAGE_SIZE);
   return <section className="panel transactions"><p className="helper">Review the detected categories. Changes update your analysis instantly.</p><div className="table-row tx-head"><span>Date</span><span>Description</span><span>Category</span><span>Amount</span></div>{paged.map(r=>{const subscription=r.isSubscription||recurring.has(subscriptionKey(r.description));return <div className={`table-row tx-row ${subscription?"subscription-row":""}`} key={r.id||`${r.date}-${r.description}`}><span>{new Date(r.date+"T00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short",year:"numeric"})}</span><strong>{r.description}{subscription&&<small className="subscription-pill"><Star size={10}/>Subscription</small>}</strong><select value={r.category} onChange={e=>onCategoryChange(r,e.target.value)}>{[...CATEGORY_RULES.map(x=>x[0]),"Other"].filter((v,i,a)=>a.indexOf(v)===i).map(c=><option key={c}>{c}</option>)}</select><span className={r.amount>0?"positive":""}>{r.amount>0?"+":""}{fmt.format(r.amount)}</span></div>})}<Pager page={page} setPage={setPage} total={rows.length}/></section>
 }
-function Categorise({rows,categories:categoryRecords,onAddCategory,onCategoryChange,onSubcategoryChange,onBulkCategoryChange,onSubscriptionChange,onExcludedChange}) {
+function Categorise({rows,categories:categoryRecords,onAddCategory,onDeleteCategory,onCategoryChange,onSubcategoryChange,onBulkCategoryChange,onSubscriptionChange,onExcludedChange,onDeleteTransaction,onDeleteTransactions}) {
   const [search,setSearch] = useState("");
   const [showCategory,setShowCategory] = useState("All");
   const [selected,setSelected] = useState(new Set());
@@ -515,6 +539,7 @@ function Categorise({rows,categories:categoryRecords,onAddCategory,onCategoryCha
   const [newSubcategory,setNewSubcategory]=useState("");
   const [parentCategory,setParentCategory]=useState("");
   const [page,setPage]=useState(0);
+  const [sort,setSort]=useState({key:"date",direction:"desc"});
   const parents=categoryRecords.filter(category=>!category.parentId).filter((category,index,array)=>array.findIndex(item=>item.name===category.name)===index);
   const categories=parents.map(category=>category.name);
   const childrenFor=name=>{const parent=parents.find(category=>category.name===name);return parent?categoryRecords.filter(category=>category.parentId===parent.id):[]};
@@ -523,7 +548,14 @@ function Categorise({rows,categories:categoryRecords,onAddCategory,onCategoryCha
   const isSubscription=row=>Boolean(row.isSubscription)||recurring.has(subscriptionKey(row.description));
   const visible = rows.filter(row => (showCategory==="All" || row.category===showCategory) && (!search || row.description.toLowerCase().includes(search.toLowerCase())) && (!subscriptionsOnly||isSubscription(row)) && (visibility==="All" || (visibility==="Excluded"?Boolean(row.isExcluded):!row.isExcluded)));
   useEffect(()=>setPage(0),[search,showCategory,subscriptionsOnly,visibility,rows.length]);
-  const ordered=visible.slice().reverse(),paged=ordered.slice(page*PAGE_SIZE,(page+1)*PAGE_SIZE);
+  const ordered=visible.slice().sort((a,b)=>{
+    const left=sort.key==="amount"?Number(a.amount):String(a[sort.key]||"").toLowerCase();
+    const right=sort.key==="amount"?Number(b.amount):String(b[sort.key]||"").toLowerCase();
+    const comparison=left<right?-1:left>right?1:0;
+    return sort.direction==="asc"?comparison:-comparison;
+  }),paged=ordered.slice(page*PAGE_SIZE,(page+1)*PAGE_SIZE);
+  const sortBy=key=>setSort(current=>({key,direction:current.key===key&&current.direction==="asc"?"desc":"asc"}));
+  const sortLabel=(label,key)=><button className="sort-heading" onClick={()=>sortBy(key)}>{label}<span>{sort.key===key?(sort.direction==="asc"?"↑":"↓"):"↕"}</span></button>;
   function toggle(id) {
     setSelected(current => { const next=new Set(current); next.has(id)?next.delete(id):next.add(id); return next; });
   }
@@ -542,6 +574,12 @@ function Categorise({rows,categories:categoryRecords,onAddCategory,onCategoryCha
     await onBulkCategoryChange(picked,bulkCategory,bulkSubcategory);
     setSelected(new Set());
   }
+  async function removeSelected() {
+    const picked=rows.filter(row=>selected.has(row.id || `${row.date}-${row.description}`));
+    if (!picked.length || !window.confirm(`Delete ${picked.length} selected transaction${picked.length===1?"":"s"}?`)) return;
+    await onDeleteTransactions(picked);
+    setSelected(new Set());
+  }
   async function createCategory(event) {
     event.preventDefault();
     if (!newCategory.trim()) return;
@@ -557,8 +595,9 @@ function Categorise({rows,categories:categoryRecords,onAddCategory,onCategoryCha
   }
   return <section className="panel categorise-page">
     <div className="category-manager"><div><span>CATEGORY SETUP</span><h3>Create categories and subcategories</h3></div><form onSubmit={createCategory}><input value={newCategory} onChange={e=>setNewCategory(e.target.value)} placeholder="New category"/><button>Add category</button></form><form onSubmit={createSubcategory}><select value={parentCategory} onChange={e=>setParentCategory(e.target.value)}><option value="">Parent category</option>{parents.map(category=><option key={category.id} value={category.id}>{category.name}</option>)}</select><input value={newSubcategory} onChange={e=>setNewSubcategory(e.target.value)} placeholder="New subcategory"/><button>Add subcategory</button></form></div>
-    <div className="category-toolbar"><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search merchant or description"/><select value={showCategory} onChange={e=>setShowCategory(e.target.value)}><option>All</option>{categories.map(category=><option key={category}>{category}</option>)}</select><select value={visibility} onChange={e=>setVisibility(e.target.value)}><option>All</option><option>Included</option><option>Excluded</option></select><label className="subscription-filter"><input type="checkbox" checked={subscriptionsOnly} onChange={e=>setSubscriptionsOnly(e.target.checked)}/><Star size={14}/>Subscriptions only</label><div className="bulk-tools"><span>{selected.size} selected</span><select value={bulkCategory} onChange={e=>{setBulkCategory(e.target.value);setBulkSubcategory("")}}>{categories.map(category=><option key={category}>{category}</option>)}</select><select value={bulkSubcategory} onChange={e=>setBulkSubcategory(e.target.value)} disabled={!bulkSubcategories.length}><option value="">{bulkSubcategories.length?"No subcategory":"None available"}</option>{bulkSubcategories.map(child=><option key={child.id}>{child.name}</option>)}</select><button disabled={!selected.size} onClick={applyBulk}>Apply both</button></div></div>
-    <div className="category-list"><div className="category-row category-head"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label={allVisibleSelected?"Clear all filtered transactions":"Select all filtered transactions"} title={allVisibleSelected?"Clear all filtered transactions":"Select all filtered transactions"}/><span>Date</span><span>Description</span><span>Amount</span><span>Category</span><span>Subcategory</span><span>Subscription</span><span>Totals</span></div>{paged.map(row=>{const key=row.id || `${row.date}-${row.description}`,subscription=isSubscription(row),children=childrenFor(row.category);return <div className={`category-row ${subscription?"subscription-row":""} ${row.isExcluded?"excluded-row":""}`} key={key}><input type="checkbox" checked={selected.has(key)} onChange={()=>toggle(key)}/><span>{new Date(row.date+"T00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short",year:"numeric"})}</span><strong>{row.description}</strong><span className={row.amount>0?"positive":""}>{row.amount>0?"+":""}{fmt.format(row.amount)}</span><select value={row.category} onChange={e=>onCategoryChange(row,e.target.value)}>{categories.map(category=><option key={category}>{category}</option>)}</select><select value={row.subcategory||""} onChange={e=>onSubcategoryChange(row,e.target.value)} disabled={!children.length}><option value="">{children.length?"No subcategory":"None available"}</option>{children.map(child=><option key={child.id}>{child.name}</option>)}</select><button className={`subscription-toggle ${row.isSubscription?"active":""}`} onClick={()=>onSubscriptionChange(row,!row.isSubscription)}><Star size={14}/>{row.isSubscription?"Marked":"Mark"}</button><button className={`exclude-toggle ${row.isExcluded?"active":""}`} onClick={()=>onExcludedChange(row,!row.isExcluded)}><EyeOff size={14}/>{row.isExcluded?"Excluded":"Include"}</button></div>})}</div>
+    <div className="category-admin-list">{parents.map(parent=><div className="category-admin-group" key={parent.id}><span><strong>{parent.name}</strong>{parent.name!=="Other"&&<button onClick={()=>window.confirm(`Delete category “${parent.name}”? Its transactions will move to Other.`)&&onDeleteCategory(parent.id)} aria-label={`Delete ${parent.name}`}><Trash2 size={12}/></button>}</span>{childrenFor(parent.name).map(child=><span className="subcategory-chip" key={child.id}>{child.name}<button onClick={()=>window.confirm(`Delete subcategory “${child.name}”?`)&&onDeleteCategory(child.id)} aria-label={`Delete ${child.name}`}><X size={12}/></button></span>)}</div>)}</div>
+    <div className="category-toolbar"><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search merchant or description"/><select value={showCategory} onChange={e=>setShowCategory(e.target.value)}><option>All</option>{categories.map(category=><option key={category}>{category}</option>)}</select><select value={visibility} onChange={e=>setVisibility(e.target.value)}><option>All</option><option>Included</option><option>Excluded</option></select><label className="subscription-filter"><input type="checkbox" checked={subscriptionsOnly} onChange={e=>setSubscriptionsOnly(e.target.checked)}/><Star size={14}/>Subscriptions only</label><div className="bulk-tools"><span>{selected.size} selected</span><select value={bulkCategory} onChange={e=>{setBulkCategory(e.target.value);setBulkSubcategory("")}}>{categories.map(category=><option key={category}>{category}</option>)}</select><select value={bulkSubcategory} onChange={e=>setBulkSubcategory(e.target.value)} disabled={!bulkSubcategories.length}><option value="">{bulkSubcategories.length?"No subcategory":"None available"}</option>{bulkSubcategories.map(child=><option key={child.id}>{child.name}</option>)}</select><button disabled={!selected.size} onClick={applyBulk}>Apply both</button><button className="danger-button" disabled={!selected.size} onClick={removeSelected}><Trash2 size={14}/>Delete</button></div></div>
+    <div className="category-list"><div className="category-row category-head"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label={allVisibleSelected?"Clear all filtered transactions":"Select all filtered transactions"} title={allVisibleSelected?"Clear all filtered transactions":"Select all filtered transactions"}/>{sortLabel("Date","date")}{sortLabel("Description","description")}{sortLabel("Amount","amount")}{sortLabel("Category","category")}{sortLabel("Subcategory","subcategory")}<span>Subscription</span><span>Totals</span><span>Delete</span></div>{paged.map(row=>{const key=row.id || `${row.date}-${row.description}`,subscription=isSubscription(row),children=childrenFor(row.category);return <div className={`category-row ${subscription?"subscription-row":""} ${row.isExcluded?"excluded-row":""}`} key={key}><input type="checkbox" checked={selected.has(key)} onChange={()=>toggle(key)}/><span>{new Date(row.date+"T00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short",year:"numeric"})}</span><strong>{row.description}</strong><span className={row.amount>0?"positive":""}>{row.amount>0?"+":""}{fmt.format(row.amount)}</span><select value={row.category} onChange={e=>onCategoryChange(row,e.target.value)}>{categories.map(category=><option key={category}>{category}</option>)}</select><select value={row.subcategory||""} onChange={e=>onSubcategoryChange(row,e.target.value)} disabled={!children.length}><option value="">{children.length?"No subcategory":"None available"}</option>{children.map(child=><option key={child.id}>{child.name}</option>)}</select><button className={`subscription-toggle ${row.isSubscription?"active":""}`} onClick={()=>onSubscriptionChange(row,!row.isSubscription)}><Star size={14}/>{row.isSubscription?"Marked":"Mark"}</button><button className={`exclude-toggle ${row.isExcluded?"active":""}`} onClick={()=>onExcludedChange(row,!row.isExcluded)}><EyeOff size={14}/>{row.isExcluded?"Excluded":"Include"}</button><button className="row-delete" onClick={()=>window.confirm("Delete this transaction?")&&onDeleteTransaction(row)} aria-label={`Delete ${row.description}`}><Trash2 size={14}/></button></div>})}</div>
     <Pager page={page} setPage={setPage} total={visible.length}/>
   </section>;
 }
