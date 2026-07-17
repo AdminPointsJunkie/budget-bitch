@@ -77,8 +77,10 @@ async function createWindow() {
     if (/^https?:/.test(target)) shell.openExternal(target);
     return {action:"deny"};
   });
+  mainWindow.once("ready-to-show",()=>mainWindow?.show());
   await mainWindow.loadURL(url);
-  mainWindow.once("ready-to-show",()=>mainWindow.show());
+  if (!mainWindow.isVisible()) mainWindow.show();
+  mainWindow.focus();
   mainWindow.once("closed",()=>{ mainWindow=null; });
 }
 
@@ -88,7 +90,10 @@ app.whenReady().then(createWindow).catch(error => {
 });
 
 app.on("activate",() => {
-  if (BrowserWindow.getAllWindows().length===0) createWindow();
+  if (mainWindow) {
+    mainWindow.show();
+    mainWindow.focus();
+  } else createWindow();
 });
 
 app.on("window-all-closed",() => {

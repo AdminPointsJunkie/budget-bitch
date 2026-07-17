@@ -8,6 +8,21 @@
   gap: 14px;
 }
 
+.actions .import-button {
+  border-color: #cfd4ff;
+  color: #4d59c9;
+}
+
+.actions button:disabled {
+  cursor: wait;
+  opacity: .6;
+}
+
+.dashboard-error {
+  margin: -14px 0 18px;
+  max-width: none;
+}
+
 .date-filters {
   display: flex;
   gap: 8px;

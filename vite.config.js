@@ -255,5 +255,6 @@ function localDataServices() {
 }
 
 export default defineConfig({
+  cacheDir:`${dataDirectory}/vite-cache`,
   plugins:[react(), localDataServices()]
 });
