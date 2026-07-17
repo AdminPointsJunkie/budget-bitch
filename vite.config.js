@@ -27,6 +27,9 @@ if (!database.prepare("PRAGMA table_info(transactions)").all().some(column=>colu
 if (!database.prepare("PRAGMA table_info(transactions)").all().some(column=>column.name==="subcategory")) {
   database.exec("ALTER TABLE transactions ADD COLUMN subcategory TEXT NOT NULL DEFAULT ''");
 }
+if (!database.prepare("PRAGMA table_info(transactions)").all().some(column=>column.name==="is_excluded")) {
+  database.exec("ALTER TABLE transactions ADD COLUMN is_excluded INTEGER NOT NULL DEFAULT 0");
+}
 database.exec(`
   CREATE TABLE IF NOT EXISTS categories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -85,25 +88,25 @@ function localDataServices() {
       server.middlewares.use("/api/transactions", async (req, res, next) => {
         try {
           if (req.method === "GET" && req.url === "/") {
-            const rows = database.prepare("SELECT id, tx_date AS date, description, category, subcategory, amount, source, is_subscription AS isSubscription FROM transactions ORDER BY tx_date, id").all();
+            const rows = database.prepare("SELECT id, tx_date AS date, description, category, subcategory, amount, source, is_subscription AS isSubscription, is_excluded AS isExcluded FROM transactions ORDER BY tx_date, id").all();
             return sendJson(res, {transactions:rows});
           }
           if (req.method === "POST" && req.url === "/") {
             const { transactions = [] } = JSON.parse((await readBody(req)).toString());
-            const insert = database.prepare("INSERT OR IGNORE INTO transactions (tx_date, description, category, subcategory, amount, source, fingerprint, is_subscription) VALUES (?, ?, ?, ?, ?, ?, ?, ?)");
+            const insert = database.prepare("INSERT OR IGNORE INTO transactions (tx_date, description, category, subcategory, amount, source, fingerprint, is_subscription, is_excluded) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
             database.exec("BEGIN");
             try {
               for (const transaction of transactions) {
                 const source = transaction.source || "";
                 const fingerprint = `${transaction.date}|${transaction.description}|${Number(transaction.amount).toFixed(2)}|${source}`;
-                insert.run(transaction.date, transaction.description, transaction.category, transaction.subcategory||"", transaction.amount, source, fingerprint, transaction.isSubscription?1:0);
+                insert.run(transaction.date, transaction.description, transaction.category, transaction.subcategory||"", transaction.amount, source, fingerprint, transaction.isSubscription?1:0, transaction.isExcluded?1:0);
               }
               database.exec("COMMIT");
             } catch (error) {
               database.exec("ROLLBACK");
               throw error;
             }
-            const rows = database.prepare("SELECT id, tx_date AS date, description, category, subcategory, amount, source, is_subscription AS isSubscription FROM transactions ORDER BY tx_date, id").all();
+            const rows = database.prepare("SELECT id, tx_date AS date, description, category, subcategory, amount, source, is_subscription AS isSubscription, is_excluded AS isExcluded FROM transactions ORDER BY tx_date, id").all();
             return sendJson(res, {transactions:rows}, 201);
           }
           const match = req.url.match(/^\/(\d+)$/);
@@ -112,6 +115,7 @@ function localDataServices() {
             if (changes.category !== undefined) database.prepare("UPDATE transactions SET category = ? WHERE id = ?").run(changes.category, Number(match[1]));
             if (changes.subcategory !== undefined) database.prepare("UPDATE transactions SET subcategory = ? WHERE id = ?").run(changes.subcategory, Number(match[1]));
             if (changes.isSubscription !== undefined) database.prepare("UPDATE transactions SET is_subscription = ? WHERE id = ?").run(changes.isSubscription?1:0, Number(match[1]));
+            if (changes.isExcluded !== undefined) database.prepare("UPDATE transactions SET is_excluded = ? WHERE id = ?").run(changes.isExcluded?1:0, Number(match[1]));
             return sendJson(res, {ok:true});
           }
           next();
