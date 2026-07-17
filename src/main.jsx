@@ -364,6 +364,18 @@ function App() {
       throw new Error("Subcategory could not be saved");
     }
   }
+  async function updateBulkCategory(rows,category,subcategory) {
+    const ids=rows.map(row=>row.id).filter(Boolean);
+    const keys=new Set(ids);
+    const previous=new Map(rows.map(row=>[row.id,{category:row.category,subcategory:row.subcategory||""}]));
+    setTransactions(current=>current.map(transaction=>keys.has(transaction.id)?{...transaction,category,subcategory}:transaction));
+    if (!ids.length) return;
+    const response=await fetch("/api/transactions/bulk",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({ids,category,subcategory})});
+    if (!response.ok) {
+      setTransactions(current=>current.map(transaction=>keys.has(transaction.id)?{...transaction,...previous.get(transaction.id)}:transaction));
+      throw new Error("Bulk category update could not be saved");
+    }
+  }
   async function addCategory(name,parentId=null) {
     const response=await fetch("/api/categories",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,parentId})});
     const data=await response.json();
@@ -390,7 +402,7 @@ function App() {
       throw new Error("Excluded status could not be saved");
     }
   }
-  if (view === "dashboard") return <Dashboard {...{transactions:filteredTransactions,totalTransactions:transactions.length,updateCategory,updateSubcategory,updateSubscription,updateExcluded,customCategories,addCategory,analysis,tab,setTab,fileNames,exportExcel,exportPdf,availableMonths,dateFrom,setDateFrom,dateTo,setDateTo,onReset:()=>{setView("landing");setTransactions([]);setDateFrom("");setDateTo("")}}}/>;
+  if (view === "dashboard") return <Dashboard {...{transactions:filteredTransactions,totalTransactions:transactions.length,updateCategory,updateSubcategory,updateBulkCategory,updateSubscription,updateExcluded,customCategories,addCategory,analysis,tab,setTab,fileNames,exportExcel,exportPdf,availableMonths,dateFrom,setDateFrom,dateTo,setDateTo,onReset:()=>{setView("landing");setTransactions([]);setDateFrom("");setDateTo("")}}}/>;
   return <Landing {...{input,handleFiles,loading,error,dragging,setDragging,onSample:()=>{setTransactions(sample);setFileNames(["Sample statement"]);setView("dashboard")}}}/>;
 }
 
@@ -436,7 +448,7 @@ function Landing({input,handleFiles,loading,error,dragging,setDragging,onSample}
 }
 function Step({n,icon,title,text}) { return <article className="step"><span className="step-number">{n}</span><div className="step-icon">{icon}</div><h3>{title}</h3><p>{text}</p></article> }
 
-function Dashboard({transactions,totalTransactions,updateCategory,updateSubcategory,updateSubscription,updateExcluded,customCategories,addCategory,analysis,tab,setTab,fileNames,exportExcel,exportPdf,availableMonths,dateFrom,setDateFrom,dateTo,setDateTo,onReset}) {
+function Dashboard({transactions,totalTransactions,updateCategory,updateSubcategory,updateBulkCategory,updateSubscription,updateExcluded,customCategories,addCategory,analysis,tab,setTab,fileNames,exportExcel,exportPdf,availableMonths,dateFrom,setDateFrom,dateTo,setDateTo,onReset}) {
   const cats = Object.entries(analysis.byCategory).sort((a,b)=>b[1]-a[1]);
   const donut = {labels:cats.map(x=>x[0]),datasets:[{data:cats.map(x=>x[1]),backgroundColor:COLORS,borderWidth:0,hoverOffset:6}]};
   const bars = {labels:analysis.monthly.map(x=>new Date(x.month+"-02").toLocaleDateString("en-AU",{month:"short"})),datasets:[{label:"Income",data:analysis.monthly.map(x=>x.income),backgroundColor:"#B9E9DE",borderRadius:7},{label:"Spending",data:analysis.monthly.map(x=>x.expense),backgroundColor:"#6574F7",borderRadius:7}]};
@@ -451,7 +463,7 @@ function Dashboard({transactions,totalTransactions,updateCategory,updateSubcateg
       <section className="panel table-panel"><div className="panel-title"><div><span>CATEGORY DETAIL</span><h3>Your spending, ranked</h3></div></div><CategoryTable cats={cats} months={monthCount} total={analysis.expenses}/></section></>}
       {tab==="budget" && <Budget cats={cats} months={monthCount} income={analysis.income/monthCount}/>}
       {tab==="transactions" && <Transactions rows={transactions} onCategoryChange={updateCategory}/>}
-      {tab==="categorise" && <Categorise rows={transactions} categories={customCategories} onAddCategory={addCategory} onCategoryChange={updateCategory} onSubcategoryChange={updateSubcategory} onSubscriptionChange={updateSubscription} onExcludedChange={updateExcluded}/>}
+      {tab==="categorise" && <Categorise rows={transactions} categories={customCategories} onAddCategory={addCategory} onCategoryChange={updateCategory} onSubcategoryChange={updateSubcategory} onBulkCategoryChange={updateBulkCategory} onSubscriptionChange={updateSubscription} onExcludedChange={updateExcluded}/>}
     </div>
   </div>;
 }
@@ -477,11 +489,12 @@ function Transactions({rows,onCategoryChange}) {
   const ordered=rows.slice().reverse(),paged=ordered.slice(page*PAGE_SIZE,(page+1)*PAGE_SIZE);
   return <section className="panel transactions"><p className="helper">Review the detected categories. Changes update your analysis instantly.</p><div className="table-row tx-head"><span>Date</span><span>Description</span><span>Category</span><span>Amount</span></div>{paged.map(r=>{const subscription=r.isSubscription||recurring.has(subscriptionKey(r.description));return <div className={`table-row tx-row ${subscription?"subscription-row":""}`} key={r.id||`${r.date}-${r.description}`}><span>{new Date(r.date+"T00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short",year:"numeric"})}</span><strong>{r.description}{subscription&&<small className="subscription-pill"><Star size={10}/>Subscription</small>}</strong><select value={r.category} onChange={e=>onCategoryChange(r,e.target.value)}>{[...CATEGORY_RULES.map(x=>x[0]),"Other"].filter((v,i,a)=>a.indexOf(v)===i).map(c=><option key={c}>{c}</option>)}</select><span className={r.amount>0?"positive":""}>{r.amount>0?"+":""}{fmt.format(r.amount)}</span></div>})}<Pager page={page} setPage={setPage} total={rows.length}/></section>
 }
-function Categorise({rows,categories:categoryRecords,onAddCategory,onCategoryChange,onSubcategoryChange,onSubscriptionChange,onExcludedChange}) {
+function Categorise({rows,categories:categoryRecords,onAddCategory,onCategoryChange,onSubcategoryChange,onBulkCategoryChange,onSubscriptionChange,onExcludedChange}) {
   const [search,setSearch] = useState("");
   const [showCategory,setShowCategory] = useState("All");
   const [selected,setSelected] = useState(new Set());
   const [bulkCategory,setBulkCategory] = useState("Other");
+  const [bulkSubcategory,setBulkSubcategory] = useState("");
   const [subscriptionsOnly,setSubscriptionsOnly] = useState(false);
   const [visibility,setVisibility] = useState("All");
   const [newCategory,setNewCategory]=useState("");
@@ -491,6 +504,7 @@ function Categorise({rows,categories:categoryRecords,onAddCategory,onCategoryCha
   const parents=categoryRecords.filter(category=>!category.parentId).filter((category,index,array)=>array.findIndex(item=>item.name===category.name)===index);
   const categories=parents.map(category=>category.name);
   const childrenFor=name=>{const parent=parents.find(category=>category.name===name);return parent?categoryRecords.filter(category=>category.parentId===parent.id):[]};
+  const bulkSubcategories=childrenFor(bulkCategory);
   const recurring=subscriptionKeys(rows);
   const isSubscription=row=>Boolean(row.isSubscription)||recurring.has(subscriptionKey(row.description));
   const visible = rows.filter(row => (showCategory==="All" || row.category===showCategory) && (!search || row.description.toLowerCase().includes(search.toLowerCase())) && (!subscriptionsOnly||isSubscription(row)) && (visibility==="All" || (visibility==="Excluded"?Boolean(row.isExcluded):!row.isExcluded)));
@@ -511,7 +525,7 @@ function Categorise({rows,categories:categoryRecords,onAddCategory,onCategoryCha
   }
   async function applyBulk() {
     const picked=rows.filter(row=>selected.has(row.id || `${row.date}-${row.description}`));
-    await Promise.all(picked.map(row=>onCategoryChange(row,bulkCategory)));
+    await onBulkCategoryChange(picked,bulkCategory,bulkSubcategory);
     setSelected(new Set());
   }
   async function createCategory(event) {
@@ -529,7 +543,7 @@ function Categorise({rows,categories:categoryRecords,onAddCategory,onCategoryCha
   }
   return <section className="panel categorise-page">
     <div className="category-manager"><div><span>CATEGORY SETUP</span><h3>Create categories and subcategories</h3></div><form onSubmit={createCategory}><input value={newCategory} onChange={e=>setNewCategory(e.target.value)} placeholder="New category"/><button>Add category</button></form><form onSubmit={createSubcategory}><select value={parentCategory} onChange={e=>setParentCategory(e.target.value)}><option value="">Parent category</option>{parents.map(category=><option key={category.id} value={category.id}>{category.name}</option>)}</select><input value={newSubcategory} onChange={e=>setNewSubcategory(e.target.value)} placeholder="New subcategory"/><button>Add subcategory</button></form></div>
-    <div className="category-toolbar"><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search merchant or description"/><select value={showCategory} onChange={e=>setShowCategory(e.target.value)}><option>All</option>{categories.map(category=><option key={category}>{category}</option>)}</select><select value={visibility} onChange={e=>setVisibility(e.target.value)}><option>All</option><option>Included</option><option>Excluded</option></select><label className="subscription-filter"><input type="checkbox" checked={subscriptionsOnly} onChange={e=>setSubscriptionsOnly(e.target.checked)}/><Star size={14}/>Subscriptions only</label><div className="bulk-tools"><span>{selected.size} selected</span><select value={bulkCategory} onChange={e=>setBulkCategory(e.target.value)}>{categories.map(category=><option key={category}>{category}</option>)}</select><button disabled={!selected.size} onClick={applyBulk}>Apply category</button></div></div>
+    <div className="category-toolbar"><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search merchant or description"/><select value={showCategory} onChange={e=>setShowCategory(e.target.value)}><option>All</option>{categories.map(category=><option key={category}>{category}</option>)}</select><select value={visibility} onChange={e=>setVisibility(e.target.value)}><option>All</option><option>Included</option><option>Excluded</option></select><label className="subscription-filter"><input type="checkbox" checked={subscriptionsOnly} onChange={e=>setSubscriptionsOnly(e.target.checked)}/><Star size={14}/>Subscriptions only</label><div className="bulk-tools"><span>{selected.size} selected</span><select value={bulkCategory} onChange={e=>{setBulkCategory(e.target.value);setBulkSubcategory("")}}>{categories.map(category=><option key={category}>{category}</option>)}</select><select value={bulkSubcategory} onChange={e=>setBulkSubcategory(e.target.value)} disabled={!bulkSubcategories.length}><option value="">{bulkSubcategories.length?"No subcategory":"None available"}</option>{bulkSubcategories.map(child=><option key={child.id}>{child.name}</option>)}</select><button disabled={!selected.size} onClick={applyBulk}>Apply both</button></div></div>
     <div className="category-list"><div className="category-row category-head"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label={allVisibleSelected?"Clear all filtered transactions":"Select all filtered transactions"} title={allVisibleSelected?"Clear all filtered transactions":"Select all filtered transactions"}/><span>Date</span><span>Description</span><span>Amount</span><span>Category</span><span>Subcategory</span><span>Subscription</span><span>Totals</span></div>{paged.map(row=>{const key=row.id || `${row.date}-${row.description}`,subscription=isSubscription(row),children=childrenFor(row.category);return <div className={`category-row ${subscription?"subscription-row":""} ${row.isExcluded?"excluded-row":""}`} key={key}><input type="checkbox" checked={selected.has(key)} onChange={()=>toggle(key)}/><span>{new Date(row.date+"T00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short",year:"numeric"})}</span><strong>{row.description}</strong><span className={row.amount>0?"positive":""}>{row.amount>0?"+":""}{fmt.format(row.amount)}</span><select value={row.category} onChange={e=>onCategoryChange(row,e.target.value)}>{categories.map(category=><option key={category}>{category}</option>)}</select><select value={row.subcategory||""} onChange={e=>onSubcategoryChange(row,e.target.value)} disabled={!children.length}><option value="">{children.length?"No subcategory":"None available"}</option>{children.map(child=><option key={child.id}>{child.name}</option>)}</select><button className={`subscription-toggle ${row.isSubscription?"active":""}`} onClick={()=>onSubscriptionChange(row,!row.isSubscription)}><Star size={14}/>{row.isSubscription?"Marked":"Mark"}</button><button className={`exclude-toggle ${row.isExcluded?"active":""}`} onClick={()=>onExcludedChange(row,!row.isExcluded)}><EyeOff size={14}/>{row.isExcluded?"Excluded":"Include"}</button></div>})}</div>
     <Pager page={page} setPage={setPage} total={visible.length}/>
   </section>;

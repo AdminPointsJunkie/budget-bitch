@@ -121,6 +121,21 @@ function localDataServices() {
             const rows = database.prepare("SELECT id, tx_date AS date, description, category, subcategory, amount, source, is_subscription AS isSubscription, is_excluded AS isExcluded FROM transactions ORDER BY tx_date, id").all();
             return sendJson(res, {transactions:rows}, 201);
           }
+          if (req.method === "PATCH" && req.url === "/bulk") {
+            const {ids=[],category,subcategory=""} = JSON.parse((await readBody(req, 1024 * 1024)).toString());
+            const validIds=[...new Set(ids.map(Number).filter(Number.isInteger))];
+            if (!validIds.length || !String(category||"").trim()) return sendJson(res,{error:"Transaction IDs and category are required"},400);
+            const update=database.prepare("UPDATE transactions SET category = ?, subcategory = ? WHERE id = ?");
+            database.exec("BEGIN");
+            try {
+              for (const id of validIds) update.run(String(category).trim(),String(subcategory||"").trim(),id);
+              database.exec("COMMIT");
+            } catch(error) {
+              database.exec("ROLLBACK");
+              throw error;
+            }
+            return sendJson(res,{ok:true,updated:validIds.length});
+          }
           const match = req.url.match(/^\/(\d+)$/);
           if (req.method === "PATCH" && match) {
             const changes = JSON.parse((await readBody(req, 1024 * 20)).toString());
