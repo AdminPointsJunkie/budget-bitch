@@ -342,6 +342,25 @@
   min-height: 54px;
 }
 
+.amount-edit {
+  background: none;
+  border: 0;
+  color: inherit;
+  cursor: text;
+  font: inherit;
+  padding: 8px 0;
+  text-align: left;
+}
+
+.amount-input {
+  border: 1px solid var(--indigo);
+  border-radius: 7px;
+  font: inherit;
+  min-width: 0;
+  padding: 7px 5px;
+  width: 100%;
+}
+
 .sort-heading {
   align-items: center;
   background: none;

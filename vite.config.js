@@ -95,6 +95,38 @@ if (!database.prepare("SELECT value FROM app_meta WHERE key = 'interest_categori
   END WHERE UPPER(TRIM(description)) = 'INTEREST CHARGE'`).run();
   database.prepare("INSERT INTO app_meta (key, value) VALUES ('interest_categories_v1', 'complete')").run();
 }
+if (!database.prepare("SELECT value FROM app_meta WHERE key = 'tesla_payments_v1'").get()) {
+  const teslaPayments=database.prepare("SELECT id, tx_date AS date, description, amount FROM transactions WHERE amount > 0 AND LOWER(description) LIKE '%tesla payment%'").all();
+  const updateTeslaPayment=database.prepare("UPDATE transactions SET amount = ?, fingerprint = ? WHERE id = ?");
+  database.exec("BEGIN");
+  try {
+    for (const transaction of teslaPayments) {
+      const amount=-Math.abs(transaction.amount);
+      updateTeslaPayment.run(amount,transactionFingerprint(transaction.date,transaction.description,amount),transaction.id);
+    }
+    database.prepare("INSERT INTO app_meta (key, value) VALUES ('tesla_payments_v1', 'complete')").run();
+    database.exec("COMMIT");
+  } catch(error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
+if (!database.prepare("SELECT value FROM app_meta WHERE key = 'amex_year_rollover_v1'").get()) {
+  const rolloverTransactions=database.prepare("SELECT id, tx_date AS date, description, amount FROM transactions WHERE source = '08_Dec_2025_-_07_Jan_2026.pdf' AND tx_date LIKE '2026-12-%'").all();
+  const updateRollover=database.prepare("UPDATE transactions SET tx_date = ?, fingerprint = ? WHERE id = ?");
+  database.exec("BEGIN");
+  try {
+    for (const transaction of rolloverTransactions) {
+      const date=transaction.date.replace(/^2026-/,"2025-");
+      updateRollover.run(date,transactionFingerprint(date,transaction.description,transaction.amount),transaction.id);
+    }
+    database.prepare("INSERT INTO app_meta (key, value) VALUES ('amex_year_rollover_v1', 'complete')").run();
+    database.exec("COMMIT");
+  } catch(error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
+}
 
 function interestClassification(description,amount,source) {
   if (String(description).trim().toUpperCase()!=="INTEREST CHARGE") return null;
@@ -158,9 +190,10 @@ function localDataServices() {
             try {
               for (const transaction of transactions) {
                 const source = transaction.source || "";
-                const fingerprint = transactionFingerprint(transaction.date,transaction.description,transaction.amount);
-                const interest=interestClassification(transaction.description,transaction.amount,source);
-                insert.run(transaction.date, transaction.description, interest?.category||transaction.category, interest?.subcategory||transaction.subcategory||"", transaction.amount, source, fingerprint, transaction.isSubscription?1:0, transaction.isExcluded?1:0);
+                const amount=/tesla payment/i.test(transaction.description)?-Math.abs(transaction.amount):transaction.amount;
+                const fingerprint = transactionFingerprint(transaction.date,transaction.description,amount);
+                const interest=interestClassification(transaction.description,amount,source);
+                insert.run(transaction.date, transaction.description, interest?.category||transaction.category, interest?.subcategory||transaction.subcategory||"", amount, source, fingerprint, transaction.isSubscription?1:0, transaction.isExcluded?1:0);
               }
               database.exec("COMMIT");
             } catch (error) {
@@ -206,6 +239,13 @@ function localDataServices() {
             if (changes.subcategory !== undefined) database.prepare("UPDATE transactions SET subcategory = ? WHERE id = ?").run(changes.subcategory, Number(match[1]));
             if (changes.isSubscription !== undefined) database.prepare("UPDATE transactions SET is_subscription = ? WHERE id = ?").run(changes.isSubscription?1:0, Number(match[1]));
             if (changes.isExcluded !== undefined) database.prepare("UPDATE transactions SET is_excluded = ? WHERE id = ?").run(changes.isExcluded?1:0, Number(match[1]));
+            if (changes.amount !== undefined) {
+              const amount=Number(changes.amount);
+              if (!Number.isFinite(amount) || amount===0) return sendJson(res,{error:"Amount must be a non-zero number"},400);
+              const transaction=database.prepare("SELECT tx_date AS date, description FROM transactions WHERE id = ?").get(Number(match[1]));
+              if (!transaction) return sendJson(res,{error:"Transaction not found"},404);
+              database.prepare("UPDATE transactions SET amount = ?, fingerprint = ? WHERE id = ?").run(amount,transactionFingerprint(transaction.date,transaction.description,amount),Number(match[1]));
+            }
             return sendJson(res, {ok:true});
           }
           if (req.method === "DELETE" && match) {
