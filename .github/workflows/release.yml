@@ -28,7 +28,7 @@ jobs:
         run: npm run build
 
       - name: Package Apple Silicon installer
-        run: npx electron-builder --mac dmg --arm64
+        run: npx electron-builder --mac dmg --arm64 --publish never
 
       - name: Publish release
         env:
