@@ -82,8 +82,26 @@ function toNumber(value) {
 }
 const MONEY_AT_END = /-?\$?[\d,]+\.\d{2}/g;
 const MONTHS = {jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+const SHORT_MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 function isoDate(year, month, day) {
   return new Date(Number(year), Number(month), Number(day), 12).toISOString().slice(0,10);
+}
+function statementSourceLabel(source) {
+  const name=String(source||"").trim();
+  if (!name) return "Source unavailable";
+  const range=name.match(/^(\d{2})_([A-Za-z]{3})_(\d{4})_-_\d{2}_([A-Za-z]{3})_(\d{4})/);
+  const dated=name.match(/^(\d{2})-(\d{2})-(\d{4})_Statement/i);
+  const isoRange=name.match(/^(Mortgage_Simplifier|Orange_Everyday)_[^_]+_(\d{4})-(\d{2})-\d{2}_(\d{4})-(\d{2})-\d{2}/i);
+  if (range) return `Amex ${range[2]} ${range[3].slice(2)}`;
+  if (dated) return `HSBC ${SHORT_MONTHS[Number(dated[2])-1]} ${dated[3].slice(2)}`;
+  if (isoRange) {
+    const account=/Mortgage/i.test(isoRange[1])?"ING Mortgage":"ING Orange";
+    const from=`${SHORT_MONTHS[Number(isoRange[3])-1]} ${isoRange[2].slice(2)}`;
+    const to=`${SHORT_MONTHS[Number(isoRange[5])-1]} ${isoRange[4].slice(2)}`;
+    return `${account} ${from}${from===to?"":`–${to}`}`;
+  }
+  if (/\.(xlsx?|csv)$/i.test(name)) return `Imported spreadsheet · ${name.replace(/\.[^.]+$/,"")}`;
+  return name.replace(/\.pdf$/i,"").replace(/_/g," ");
 }
 function statementYear(text, fallback = new Date().getFullYear()) {
   const years = [...text.matchAll(/\b(20\d{2})\b/g)].map(m=>Number(m[1]));
@@ -191,12 +209,14 @@ function normaliseRows(rows) {
     const amountKey = find("amount", "value");
     const debitKey = find("debit", "withdrawal");
     const creditKey = find("credit", "deposit");
+    const sourceKey = find("source file", "statement source", "source");
     let amount = amountKey ? toNumber(row[amountKey]) : toNumber(row[creditKey]) - toNumber(row[debitKey]);
     const description = String(row[descKey] ?? "Transaction").trim();
     return {
       date: new Date(row[dateKey] ?? Date.now()).toISOString().slice(0,10),
       description,
       category: detectCategory(description, amount),
+      source: sourceKey ? String(row[sourceKey]||"").trim() : "",
       amount
     };
   }).filter(r => r.amount !== 0 && !Number.isNaN(new Date(r.date).getTime()));
@@ -233,7 +253,7 @@ async function parseFile(file) {
   if (ext === "pdf") {
     const response = await fetch("/api/parse-pdf", {
       method:"POST",
-      headers:{"Content-Type":"application/pdf"},
+      headers:{"Content-Type":"application/pdf","X-Statement-Filename":encodeURIComponent(file.name)},
       body:await file.arrayBuffer()
     });
     if (!response.ok) {
@@ -316,7 +336,7 @@ function App() {
     if (!picked.length) return;
     setLoading(true); setError("");
     try {
-      const sets = await Promise.all(picked.map(async file => (await parseFile(file)).map(transaction=>({...transaction,source:file.name}))));
+      const sets = await Promise.all(picked.map(async file => (await parseFile(file)).map(transaction=>({...transaction,source:transaction.source||file.name}))));
       const merged = sets.flat().sort((a,b)=>a.date.localeCompare(b.date));
       if (!merged.length) throw new Error("No transactions were found. Check that your file has date, description and amount columns.");
       const response = await fetch("/api/transactions", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({transactions:merged})});
@@ -337,8 +357,8 @@ function App() {
     const { default: ExcelJS } = await import("exceljs");
     const wb = new ExcelJS.Workbook();
     const txSheet = wb.addWorksheet("Transactions");
-    txSheet.columns = [{header:"Date",key:"date",width:14},{header:"Description",key:"description",width:34},{header:"Category",key:"category",width:20},{header:"Amount",key:"amount",width:14}];
-    txSheet.addRows(filteredTransactions);
+    txSheet.columns = [{header:"Date",key:"date",width:14},{header:"Description",key:"description",width:34},{header:"Category",key:"category",width:20},{header:"Amount",key:"amount",width:14},{header:"Statement",key:"statement",width:24},{header:"Source file",key:"source",width:42}];
+    txSheet.addRows(filteredTransactions.map(transaction=>({...transaction,statement:statementSourceLabel(transaction.source)})));
     const budget = Object.entries(analysis.byCategory).map(([Category,Total])=>({Category,MonthlyAverage:Total/analysis.months.length,SuggestedBudget:Math.ceil((Total/analysis.months.length)*1.05/10)*10}));
     const budgetSheet = wb.addWorksheet("Monthly Budget");
     budgetSheet.columns = [{header:"Category",key:"Category",width:22},{header:"Monthly Average",key:"MonthlyAverage",width:18},{header:"Suggested Budget",key:"SuggestedBudget",width:18}];
@@ -477,7 +497,7 @@ function Landing({input,handleFiles,loading,error,dragging,setDragging,onSample}
         </div>
         {error && <div className="error"><X size={16}/>{error}</div>}
         <button className="sample-link" onClick={onSample}>Explore with sample data <ChevronRight size={16}/></button>
-        <div className="trust-row"><span><ShieldCheck size={18}/> Processed in your browser</span><span><LockKeyhole size={18}/> Nothing stored</span><span><Check size={18}/> No sign-up</span></div>
+        <div className="trust-row"><span><ShieldCheck size={18}/> Processed on your Mac</span><span><LockKeyhole size={18}/> Stored locally only</span><span><Check size={18}/> No sign-up</span></div>
       </section>
       <section className="preview">
         <div className="float-card card-one"><span>Monthly breathing room</span><strong>$1,436</strong><small><TrendingDown size={14}/> 8% better than last month</small></div>
@@ -493,7 +513,7 @@ function Landing({input,handleFiles,loading,error,dragging,setDragging,onSample}
         <Step n="03" icon={<Target/>} title="Build a better month" text="See patterns, adjust category targets and export a practical budget."/>
       </div>
     </section>
-    <section className="privacy" id="privacy"><ShieldCheck size={34}/><div><h3>Your financial data stays yours.</h3><p>Budget Bitch! analyses files locally in your browser. Your statement data is never uploaded or retained.</p></div></section>
+    <section className="privacy" id="privacy"><ShieldCheck size={34}/><div><h3>Your financial data stays yours.</h3><p>Budget Bitch! stores your transactions and statement PDFs locally on your Mac. Your financial data is never uploaded to a third party.</p></div></section>
   </div>;
 }
 function Step({n,icon,title,text}) { return <article className="step"><span className="step-number">{n}</span><div className="step-icon">{icon}</div><h3>{title}</h3><p>{text}</p></article> }
@@ -506,10 +526,10 @@ function Dashboard({transactions,totalTransactions,updateCategory,updateSubcateg
   const barRevision=analysis.monthly.map(month=>`${month.month}:${month.income}:${month.expense}`).join("|");
   const monthCount = Math.max(analysis.months.length,1);
   return <div className="app-shell">
-    <aside><Brand/><div className="side-files"><span>ANALYSIS</span><button className={tab==="analysis"?"active":""} onClick={()=>setTab("analysis")}><PieChart size={18}/>Spending analysis</button><button className={tab==="budget"?"active":""} onClick={()=>setTab("budget")}><WalletCards size={18}/>Monthly budget</button><button className={tab==="transactions"?"active":""} onClick={()=>setTab("transactions")}><FileSpreadsheet size={18}/>Transactions</button><button className={tab==="categorise"?"active":""} onClick={()=>setTab("categorise")}><Target size={18}/>Categorise</button></div><div className="file-box"><Landmark size={18}/><div><strong>{fileNames.length} source{fileNames.length!==1?"s":""}</strong><span>{transactions.length}{transactions.length!==totalTransactions?` of ${totalTransactions}`:""} transactions</span></div></div><button className="reset" onClick={onReset}><RefreshCw size={16}/>New analysis</button></aside>
+    <aside><Brand/><div className="side-files"><span>ANALYSIS</span><button className={tab==="analysis"?"active":""} onClick={()=>setTab("analysis")}><PieChart size={18}/>Spending analysis</button><button className={tab==="budget"?"active":""} onClick={()=>setTab("budget")}><WalletCards size={18}/>Monthly budget</button><button className={tab==="transactions"?"active":""} onClick={()=>setTab("transactions")}><FileSpreadsheet size={18}/>Transactions</button><button className={tab==="categorise"?"active":""} onClick={()=>setTab("categorise")}><Target size={18}/>Categorise</button><button className={tab==="statements"?"active":""} onClick={()=>setTab("statements")}><FileText size={18}/>Statements</button></div><div className="file-box"><Landmark size={18}/><div><strong>{fileNames.length} source{fileNames.length!==1?"s":""}</strong><span>{transactions.length}{transactions.length!==totalTransactions?` of ${totalTransactions}`:""} transactions</span></div></div><button className="reset" onClick={onReset}><RefreshCw size={16}/>New analysis</button></aside>
     <div className="dash-main">
       <input ref={input} type="file" hidden multiple accept=".csv,.xlsx,.ofx,.pdf" onChange={e=>{handleFiles(e.target.files);e.target.value=""}}/>
-      <header><div><span className="overline">YOUR MONEY SNAPSHOT</span><h1>{tab==="analysis"?"Spending analysis":tab==="budget"?"Monthly budget":tab==="categorise"?"Categorise transactions":"Transactions"}</h1></div><div className="header-tools"><div className="date-filters"><label><span>From</span><select value={dateFrom} onChange={e=>{setDateFrom(e.target.value);if(dateTo&&e.target.value>dateTo)setDateTo(e.target.value)}}><option value="">First month</option>{availableMonths.map(month=><option key={month} value={month}>{new Date(month+"-02").toLocaleDateString("en-AU",{month:"short",year:"numeric"})}</option>)}</select></label><label><span>To</span><select value={dateTo} onChange={e=>{setDateTo(e.target.value);if(dateFrom&&e.target.value<dateFrom)setDateFrom(e.target.value)}}><option value="">Latest month</option>{availableMonths.map(month=><option key={month} value={month}>{new Date(month+"-02").toLocaleDateString("en-AU",{month:"short",year:"numeric"})}</option>)}</select></label></div><div className="actions"><button className="import-button" disabled={loading} onClick={()=>input.current?.click()}><UploadCloud size={16}/>{loading?"Importing…":"Import statements"}</button><button onClick={exportPdf}><FileText size={16}/>PDF</button><button className="primary" onClick={exportExcel}><Download size={16}/>Export Excel</button></div></div></header>
+      <header><div><span className="overline">YOUR MONEY SNAPSHOT</span><h1>{tab==="analysis"?"Spending analysis":tab==="budget"?"Monthly budget":tab==="categorise"?"Categorise transactions":tab==="statements"?"Statements":"Transactions"}</h1></div><div className="header-tools"><div className="date-filters"><label><span>From</span><select value={dateFrom} onChange={e=>{setDateFrom(e.target.value);if(dateTo&&e.target.value>dateTo)setDateTo(e.target.value)}}><option value="">First month</option>{availableMonths.map(month=><option key={month} value={month}>{new Date(month+"-02").toLocaleDateString("en-AU",{month:"short",year:"numeric"})}</option>)}</select></label><label><span>To</span><select value={dateTo} onChange={e=>{setDateTo(e.target.value);if(dateFrom&&e.target.value<dateFrom)setDateFrom(e.target.value)}}><option value="">Latest month</option>{availableMonths.map(month=><option key={month} value={month}>{new Date(month+"-02").toLocaleDateString("en-AU",{month:"short",year:"numeric"})}</option>)}</select></label></div><div className="actions"><button className="import-button" disabled={loading} onClick={()=>input.current?.click()}><UploadCloud size={16}/>{loading?"Importing…":"Import statements"}</button><button onClick={exportPdf}><FileText size={16}/>PDF</button><button className="primary" onClick={exportExcel}><Download size={16}/>Export Excel</button></div></div></header>
       {error&&<div className="error dashboard-error"><X size={15}/>{error}</div>}
       {tab==="analysis" && <><div className="metric-grid"><Metric label="Average monthly spend" value={fmt.format(analysis.average)} note={`${analysis.months.length} month view`} icon={<TrendingDown/>}/><Metric label="Average monthly income" value={fmt.format(analysis.income/monthCount)} note={`${fmt.format(analysis.income-analysis.expenses)} net total`} icon={<WalletCards/>}/><Metric label="Transactions" value={transactions.length} note={`${cats.length} spending categories`} icon={<FileSpreadsheet/>}/></div>
       <div className="chart-grid"><section className="panel"><div className="panel-title"><div><span>SPENDING MIX</span><h3>Where your money goes</h3></div></div><div className="donut-wrap"><Doughnut key={donutRevision} redraw data={donut} options={{cutout:"68%",plugins:{legend:{display:false}}}}/><div className="donut-label"><strong>{fmt.format(analysis.expenses)}</strong><span>total spent</span></div></div><div className="legend">{cats.slice(0,6).map(([c,v],i)=><div key={c}><i style={{background:COLORS[i%COLORS.length]}}/><span>{c}</span><strong>{Math.round(v/analysis.expenses*100)}%</strong></div>)}</div></section>
@@ -518,6 +538,7 @@ function Dashboard({transactions,totalTransactions,updateCategory,updateSubcateg
       {tab==="budget" && <Budget cats={cats} months={monthCount} income={analysis.income/monthCount}/>}
       {tab==="transactions" && <Transactions rows={transactions} onCategoryChange={updateCategory}/>}
       {tab==="categorise" && <Categorise rows={transactions} categories={customCategories} onAddCategory={addCategory} onDeleteCategory={deleteCategory} onCategoryChange={updateCategory} onSubcategoryChange={updateSubcategory} onBulkCategoryChange={updateBulkCategory} onSubscriptionChange={updateSubscription} onExcludedChange={updateExcluded} onAmountChange={updateAmount} onDeleteTransaction={deleteTransaction} onDeleteTransactions={deleteTransactions}/>}
+      {tab==="statements" && <Statements/>}
     </div>
   </div>;
 }
@@ -546,7 +567,14 @@ function Transactions({rows,onCategoryChange}) {
   useEffect(()=>setPage(0),[rows]);
   const recurring=subscriptionKeys(rows);
   const ordered=rows.slice().reverse(),paged=ordered.slice(page*PAGE_SIZE,(page+1)*PAGE_SIZE);
-  return <section className="panel transactions"><p className="helper">Review the detected categories. Changes update your analysis instantly.</p><div className="table-row tx-head"><span>Date</span><span>Description</span><span>Category</span><span>Amount</span></div>{paged.map(r=>{const subscription=r.isSubscription||recurring.has(subscriptionKey(r.description));return <div className={`table-row tx-row ${subscription?"subscription-row":""}`} key={r.id||`${r.date}-${r.description}`}><span>{new Date(r.date+"T00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short",year:"numeric"})}</span><strong>{r.description}{subscription&&<small className="subscription-pill"><Star size={10}/>Subscription</small>}</strong><select value={r.category} onChange={e=>onCategoryChange(r,e.target.value)}>{[...CATEGORY_RULES.map(x=>x[0]),"Other"].filter((v,i,a)=>a.indexOf(v)===i).map(c=><option key={c}>{c}</option>)}</select><span className={r.amount>0?"positive":""}>{r.amount>0?"+":""}{fmt.format(r.amount)}</span></div>})}<Pager page={page} setPage={setPage} total={rows.length}/></section>
+  return <section className="panel transactions"><p className="helper">Review the detected categories. Changes update your analysis instantly.</p><div className="table-row tx-head"><span>Date</span><span>Description</span><span>Category</span><span>Amount</span></div>{paged.map(r=>{const subscription=r.isSubscription||recurring.has(subscriptionKey(r.description));return <div className={`table-row tx-row ${subscription?"subscription-row":""}`} key={r.id||`${r.date}-${r.description}`}><span>{new Date(r.date+"T00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short",year:"numeric"})}</span><div className="transaction-description"><strong>{r.description}{subscription&&<small className="subscription-pill"><Star size={10}/>Subscription</small>}</strong><small className="source-label" title={r.source}>{statementSourceLabel(r.source)}</small></div><select value={r.category} onChange={e=>onCategoryChange(r,e.target.value)}>{[...CATEGORY_RULES.map(x=>x[0]),"Other"].filter((v,i,a)=>a.indexOf(v)===i).map(c=><option key={c}>{c}</option>)}</select><span className={r.amount>0?"positive":""}>{r.amount>0?"+":""}{fmt.format(r.amount)}</span></div>})}<Pager page={page} setPage={setPage} total={rows.length}/></section>
+}
+function Statements() {
+  const [statements,setStatements]=useState([]);
+  const [selected,setSelected]=useState("");
+  useEffect(()=>{fetch("/api/statements").then(response=>response.json()).then(data=>setStatements(data.statements||[])).catch(()=>setStatements([]))},[]);
+  if (selected) return <section className="panel statement-viewer"><div className="statement-viewer-head"><div><span>ORIGINAL PDF</span><h3>{statementSourceLabel(selected)}</h3><small>{selected}</small></div><button onClick={()=>setSelected("")}>Back to statements</button></div><iframe title={selected} src={`/api/statements/file/${encodeURIComponent(selected)}`}/></section>;
+  return <section className="panel statements-page"><div className="panel-title"><div><span>LOCAL STATEMENT LIBRARY</span><h3>Your imported PDFs</h3><p>Click a statement to view the original PDF. Files stay on this Mac.</p></div></div>{statements.length?<div className="statement-grid">{statements.map(statement=><button key={statement.filename} onClick={()=>setSelected(statement.filename)}><FileText size={22}/><span><strong>{statementSourceLabel(statement.filename)}</strong><small>{statement.filename}</small></span><em>{statement.transactionCount} transaction{statement.transactionCount===1?"":"s"}</em><ChevronRight size={16}/></button>)}</div>:<div className="empty-statements"><FileText size={30}/><strong>No saved PDFs yet</strong><span>Import a PDF statement and it will appear here.</span></div>}</section>;
 }
 function EditableAmount({row,onChange}) {
   const [editing,setEditing]=useState(false);
@@ -578,7 +606,7 @@ function Categorise({rows,categories:categoryRecords,onAddCategory,onDeleteCateg
   const isSubscription=row=>Boolean(row.isSubscription)||recurring.has(subscriptionKey(row.description));
   const numericSearch=Number(search.trim().replace(/[~$,\s]/g,""));
   const hasNumericSearch=search.trim()!==""&&Number.isFinite(numericSearch);
-  const matchesSearch=row=>!search || row.description.toLowerCase().includes(search.toLowerCase()) || (hasNumericSearch&&Math.abs(Math.abs(row.amount)-Math.abs(numericSearch))<=Math.max(1,Math.abs(numericSearch)*.02));
+  const matchesSearch=row=>!search || row.description.toLowerCase().includes(search.toLowerCase()) || statementSourceLabel(row.source).toLowerCase().includes(search.toLowerCase()) || String(row.source||"").toLowerCase().includes(search.toLowerCase()) || (hasNumericSearch&&Math.abs(Math.abs(row.amount)-Math.abs(numericSearch))<=Math.max(1,Math.abs(numericSearch)*.02));
   const visible = rows.filter(row => (showCategory==="All" || row.category===showCategory) && matchesSearch(row) && (!subscriptionsOnly||isSubscription(row)) && (visibility==="All" || (visibility==="Excluded"?Boolean(row.isExcluded):!row.isExcluded)));
   useEffect(()=>setPage(0),[search,showCategory,subscriptionsOnly,visibility,rows.length]);
   const ordered=visible.slice().sort((a,b)=>{
@@ -630,7 +658,7 @@ function Categorise({rows,categories:categoryRecords,onAddCategory,onDeleteCateg
     <div className="category-page-tools"><button className="manage-categories-button" onClick={()=>setManageOpen(true)}>Manage categories</button></div>
     {manageOpen&&<div className="modal-backdrop" onMouseDown={event=>event.target===event.currentTarget&&setManageOpen(false)}><div className="category-modal" role="dialog" aria-modal="true" aria-label="Manage categories and subcategories"><div className="modal-heading"><div><span>CATEGORY SETUP</span><h2>Manage categories</h2><p>Add or remove categories and subcategories.</p></div><button onClick={()=>setManageOpen(false)} aria-label="Close category manager"><X size={20}/></button></div><div className="category-manager"><form onSubmit={createCategory}><input value={newCategory} onChange={e=>setNewCategory(e.target.value)} placeholder="New category"/><button>Add category</button></form><form onSubmit={createSubcategory}><select value={parentCategory} onChange={e=>setParentCategory(e.target.value)}><option value="">Parent category</option>{parents.map(category=><option key={category.id} value={category.id}>{category.name}</option>)}</select><input value={newSubcategory} onChange={e=>setNewSubcategory(e.target.value)} placeholder="New subcategory"/><button>Add subcategory</button></form></div><div className="category-admin-list">{parents.map(parent=><div className="category-admin-group" key={parent.id}><span><strong>{parent.name}</strong>{parent.name!=="Other"&&<button onClick={()=>window.confirm(`Delete category “${parent.name}”? Its transactions will move to Other.`)&&onDeleteCategory(parent.id)} aria-label={`Delete ${parent.name}`}><Trash2 size={12}/></button>}</span>{childrenFor(parent.name).map(child=><span className="subcategory-chip" key={child.id}>{child.name}<button onClick={()=>window.confirm(`Delete subcategory “${child.name}”?`)&&onDeleteCategory(child.id)} aria-label={`Delete ${child.name}`}><X size={12}/></button></span>)}</div>)}</div></div></div>}
     <div className="category-toolbar"><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search description or amount (amounts match ±2%)"/><select value={showCategory} onChange={e=>setShowCategory(e.target.value)}><option>All</option>{categories.map(category=><option key={category}>{category}</option>)}</select><select value={visibility} onChange={e=>setVisibility(e.target.value)}><option>All</option><option>Included</option><option>Excluded</option></select><label className="subscription-filter"><input type="checkbox" checked={subscriptionsOnly} onChange={e=>setSubscriptionsOnly(e.target.checked)}/><Star size={14}/>Subscriptions only</label>{selected.size>0&&<div className="bulk-tools"><span>{selected.size} selected</span><select value={bulkCategory} onChange={e=>{setBulkCategory(e.target.value);setBulkSubcategory("")}}>{categories.map(category=><option key={category}>{category}</option>)}</select><select value={bulkSubcategory} onChange={e=>setBulkSubcategory(e.target.value)} disabled={!bulkSubcategories.length}><option value="">{bulkSubcategories.length?"No subcategory":"None available"}</option>{bulkSubcategories.map(child=><option key={child.id}>{child.name}</option>)}</select><button onClick={applyBulk}>Apply both</button><button className="danger-button" onClick={removeSelected}><Trash2 size={14}/>Delete</button></div>}</div>
-    <div className="category-list"><div className="category-row category-head"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label={allVisibleSelected?"Clear all filtered transactions":"Select all filtered transactions"} title={allVisibleSelected?"Clear all filtered transactions":"Select all filtered transactions"}/>{sortLabel("Date","date")}{sortLabel("Description","description")}{sortLabel("Amount","amount")}{sortLabel("Category","category")}{sortLabel("Subcategory","subcategory")}<span>Subscription</span><span>Totals</span><span>Delete</span></div>{paged.map(row=>{const key=row.id || `${row.date}-${row.description}`,subscription=isSubscription(row),children=childrenFor(row.category);return <div className={`category-row ${subscription?"subscription-row":""} ${row.isExcluded?"excluded-row":""}`} key={key}><input type="checkbox" checked={selected.has(key)} onChange={()=>toggle(key)}/><span>{new Date(row.date+"T00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short",year:"numeric"})}</span><strong>{row.description}</strong><EditableAmount row={row} onChange={onAmountChange}/><select value={row.category} onChange={e=>onCategoryChange(row,e.target.value)}>{categories.map(category=><option key={category}>{category}</option>)}</select><select value={row.subcategory||""} onChange={e=>onSubcategoryChange(row,e.target.value)} disabled={!children.length}><option value="">{children.length?"No subcategory":"None available"}</option>{children.map(child=><option key={child.id}>{child.name}</option>)}</select><button className={`subscription-toggle ${row.isSubscription?"active":""}`} onClick={()=>onSubscriptionChange(row,!row.isSubscription)}><Star size={14}/>{row.isSubscription?"Marked":"Mark"}</button><button className={`exclude-toggle ${row.isExcluded?"active":""}`} onClick={()=>onExcludedChange(row,!row.isExcluded)}><EyeOff size={14}/>{row.isExcluded?"Excluded":"Exclude"}</button><button className="row-delete" onClick={()=>window.confirm("Delete this transaction?")&&onDeleteTransaction(row)} aria-label={`Delete ${row.description}`}><Trash2 size={14}/></button></div>})}</div>
+    <div className="category-list"><div className="category-row category-head"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label={allVisibleSelected?"Clear all filtered transactions":"Select all filtered transactions"} title={allVisibleSelected?"Clear all filtered transactions":"Select all filtered transactions"}/>{sortLabel("Date","date")}{sortLabel("Description","description")}{sortLabel("Amount","amount")}{sortLabel("Category","category")}{sortLabel("Subcategory","subcategory")}<span>Subscription</span><span>Totals</span><span>Delete</span></div>{paged.map(row=>{const key=row.id || `${row.date}-${row.description}`,subscription=isSubscription(row),children=childrenFor(row.category);return <div className={`category-row ${subscription?"subscription-row":""} ${row.isExcluded?"excluded-row":""}`} key={key}><input type="checkbox" checked={selected.has(key)} onChange={()=>toggle(key)}/><span>{new Date(row.date+"T00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short",year:"numeric"})}</span><div className="transaction-description"><strong>{row.description}</strong><small className="source-label" title={row.source}>{statementSourceLabel(row.source)}</small></div><EditableAmount row={row} onChange={onAmountChange}/><select value={row.category} onChange={e=>onCategoryChange(row,e.target.value)}>{categories.map(category=><option key={category}>{category}</option>)}</select><select value={row.subcategory||""} onChange={e=>onSubcategoryChange(row,e.target.value)} disabled={!children.length}><option value="">{children.length?"No subcategory":"None available"}</option>{children.map(child=><option key={child.id}>{child.name}</option>)}</select><button className={`subscription-toggle ${row.isSubscription?"active":""}`} onClick={()=>onSubscriptionChange(row,!row.isSubscription)}><Star size={14}/>{row.isSubscription?"Marked":"Mark"}</button><button className={`exclude-toggle ${row.isExcluded?"active":""}`} onClick={()=>onExcludedChange(row,!row.isExcluded)}><EyeOff size={14}/>{row.isExcluded?"Excluded":"Exclude"}</button><button className="row-delete" onClick={()=>window.confirm("Delete this transaction?")&&onDeleteTransaction(row)} aria-label={`Delete ${row.description}`}><Trash2 size={14}/></button></div>})}</div>
     <Pager page={page} setPage={setPage} total={visible.length}/>
   </section>;
 }

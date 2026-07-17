@@ -2,13 +2,17 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { copyFileSync, existsSync, mkdirSync } from "node:fs";
+import { basename, join } from "node:path";
+import { homedir } from "node:os";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
 const extractor = fileURLToPath(new URL("./scripts/extract_pdf.py", import.meta.url));
 const dataDirectory = process.env.BUDGET_BITCH_DATA_DIR || fileURLToPath(new URL("./.data", import.meta.url));
 mkdirSync(dataDirectory, { recursive:true });
 const databasePath = `${dataDirectory}/ledgerly.db`;
+const statementsDirectory = join(dataDirectory,"statements");
+mkdirSync(statementsDirectory,{recursive:true});
 const database = new DatabaseSync(databasePath);
 database.exec(`
   CREATE TABLE IF NOT EXISTS transactions (
@@ -69,6 +73,16 @@ database.exec(`
   )
 `);
 database.exec("CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
+database.exec("CREATE TABLE IF NOT EXISTS statements (filename TEXT PRIMARY KEY, imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)");
+const rememberStatement=database.prepare("INSERT OR IGNORE INTO statements (filename) VALUES (?)");
+const pdfSources=database.prepare("SELECT DISTINCT source FROM transactions WHERE LOWER(source) LIKE '%.pdf'").all();
+for (const {source} of pdfSources) {
+  const filename=basename(source);
+  const storedPath=join(statementsDirectory,filename);
+  const downloadPath=join(homedir(),"Downloads",filename);
+  if (!existsSync(storedPath)&&existsSync(downloadPath)) copyFileSync(downloadPath,storedPath);
+  if (existsSync(storedPath)) rememberStatement.run(filename);
+}
 const duplicateParents = database.prepare("SELECT name, MIN(id) AS keep_id FROM categories WHERE parent_id IS NULL GROUP BY name HAVING COUNT(*) > 1").all();
 for (const duplicate of duplicateParents) {
   const duplicateIds = database.prepare("SELECT id FROM categories WHERE parent_id IS NULL AND name = ? AND id != ?").all(duplicate.name, duplicate.keep_id);
@@ -170,11 +184,39 @@ function localDataServices() {
             res.setHeader("Content-Type", "application/json");
             if (code !== 0) {
               sendJson(res, {error:Buffer.concat(errors).toString().trim() || "Unable to read PDF"}, 422);
-            } else res.end(Buffer.concat(output));
+            } else {
+              const filename=basename(decodeURIComponent(String(req.headers["x-statement-filename"]||"statement.pdf")));
+              writeFileSync(join(statementsDirectory,filename),body);
+              rememberStatement.run(filename);
+              res.end(Buffer.concat(output));
+            }
           });
           child.stdin.end(body);
         } catch (error) {
           sendJson(res, {error:error.message}, 400);
+        }
+      });
+      server.middlewares.use("/api/statements", async (req,res,next)=>{
+        try {
+          if (req.method==="GET"&&req.url==="/") {
+            const statements=database.prepare(`SELECT statements.filename, statements.imported_at AS importedAt,
+              (SELECT COUNT(*) FROM transactions WHERE transactions.source = statements.filename) AS transactionCount
+              FROM statements ORDER BY statements.filename`).all();
+            return sendJson(res,{statements});
+          }
+          const match=req.url.match(/^\/file\/(.+)$/);
+          if (req.method==="GET"&&match) {
+            const filename=basename(decodeURIComponent(match[1]));
+            const path=join(statementsDirectory,filename);
+            if (!existsSync(path)) return sendJson(res,{error:"Statement file not found"},404);
+            res.statusCode=200;
+            res.setHeader("Content-Type","application/pdf");
+            res.setHeader("Content-Disposition",`inline; filename="${filename.replaceAll('"',"")}"`);
+            return res.end(readFileSync(path));
+          }
+          next();
+        } catch(error) {
+          sendJson(res,{error:error.message},400);
         }
       });
       server.middlewares.use("/api/transactions", async (req, res, next) => {
