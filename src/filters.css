@@ -142,6 +142,40 @@
   overflow-x: auto;
 }
 
+.pager {
+  align-items: center;
+  color: #7b8490;
+  display: flex;
+  font-size: 12px;
+  gap: 18px;
+  justify-content: space-between;
+  padding: 18px 2px 2px;
+}
+
+.pager div {
+  align-items: center;
+  display: flex;
+  gap: 12px;
+}
+
+.pager button {
+  background: #fff;
+  border: 1px solid #d9dde3;
+  border-radius: 8px;
+  color: #17202c;
+  font-weight: 700;
+  padding: 7px 11px;
+}
+
+.pager button:disabled {
+  cursor: default;
+  opacity: .4;
+}
+
+.pager strong {
+  color: #4f5967;
+}
+
 .category-row {
   align-items: center;
   border-bottom: 1px solid #eef0f2;
