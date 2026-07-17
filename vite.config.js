@@ -6,7 +6,7 @@ import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
 const extractor = fileURLToPath(new URL("./scripts/extract_pdf.py", import.meta.url));
-const dataDirectory = fileURLToPath(new URL("./.data", import.meta.url));
+const dataDirectory = process.env.BUDGET_BITCH_DATA_DIR || fileURLToPath(new URL("./.data", import.meta.url));
 mkdirSync(dataDirectory, { recursive:true });
 const databasePath = `${dataDirectory}/ledgerly.db`;
 const database = new DatabaseSync(databasePath);
