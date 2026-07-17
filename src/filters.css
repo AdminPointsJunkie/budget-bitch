@@ -55,6 +55,92 @@
   padding: 16px;
 }
 
+.category-page-tools {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+
+.manage-categories-button {
+  background: white;
+  border: 1px solid #d9dde3;
+  border-radius: 8px;
+  color: #4f5967;
+  font-size: 12px;
+  font-weight: 700;
+  padding: 8px 12px;
+}
+
+.modal-backdrop {
+  align-items: center;
+  background: rgba(18, 26, 37, .48);
+  display: flex;
+  inset: 0;
+  justify-content: center;
+  padding: 24px;
+  position: fixed;
+  z-index: 100;
+}
+
+.category-modal {
+  background: white;
+  border-radius: 16px;
+  box-shadow: 0 24px 80px rgba(17, 25, 37, .24);
+  max-height: 82vh;
+  max-width: 940px;
+  overflow: auto;
+  padding: 22px;
+  width: 100%;
+}
+
+.modal-heading {
+  align-items: flex-start;
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 18px;
+}
+
+.modal-heading span {
+  color: var(--indigo);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .12em;
+}
+
+.modal-heading h2 {
+  font: 700 22px Manrope;
+  margin: 4px 0;
+}
+
+.modal-heading p {
+  color: var(--muted);
+  font-size: 12px;
+  margin: 0;
+}
+
+.modal-heading > button {
+  background: #f3f4f6;
+  border: 0;
+  border-radius: 8px;
+  color: #66717f;
+  display: grid;
+  padding: 7px;
+  place-items: center;
+}
+
+.category-modal .category-manager {
+  grid-template-columns: 1fr 1.45fr;
+  margin-bottom: 16px;
+}
+
+.category-modal .category-manager form:first-child input {
+  flex: 1;
+}
+
+.category-modal .category-admin-list {
+  margin: 0;
+}
+
 .category-manager span {
   color: var(--indigo);
   font-size: 9px;
@@ -156,6 +242,11 @@
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+  grid-column: 1 / -1;
+  background: #f5f6fb;
+  border: 1px solid #e1e4ef;
+  border-radius: 9px;
+  padding: 8px;
 }
 
 .bulk-tools > span {
