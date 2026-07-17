@@ -281,7 +281,15 @@ function App() {
     const expenses = includedTransactions.filter(t=>t.amount<0 && t.category!=="Transfers");
     const income = includedTransactions.filter(t=>t.amount>0 && t.category!=="Transfers");
     const byCategory = {};
-    expenses.forEach(t => byCategory[t.category]=(byCategory[t.category]||0)+Math.abs(t.amount));
+    const bySubcategory = {};
+    expenses.forEach(t => {
+      const amount=Math.abs(t.amount);
+      byCategory[t.category]=(byCategory[t.category]||0)+amount;
+      if (t.subcategory) {
+        bySubcategory[t.category] ||= {};
+        bySubcategory[t.category][t.subcategory]=(bySubcategory[t.category][t.subcategory]||0)+amount;
+      }
+    });
     const months = [...new Set(includedTransactions.map(t=>t.date.slice(0,7)))].sort();
     const monthly = months.map(m => ({
       month:m,
@@ -292,6 +300,7 @@ function App() {
       expenses: expenses.reduce((s,t)=>s+Math.abs(t.amount),0),
       income: income.reduce((s,t)=>s+t.amount,0),
       byCategory,
+      bySubcategory,
       months,
       monthly,
       average: months.length ? expenses.reduce((s,t)=>s+Math.abs(t.amount),0)/months.length : 0
@@ -460,7 +469,7 @@ function Dashboard({transactions,totalTransactions,updateCategory,updateSubcateg
       {tab==="analysis" && <><div className="metric-grid"><Metric label="Average monthly spend" value={fmt.format(analysis.average)} note={`${analysis.months.length} month view`} icon={<TrendingDown/>}/><Metric label="Average monthly income" value={fmt.format(analysis.income/monthCount)} note={`${fmt.format(analysis.income-analysis.expenses)} net total`} icon={<WalletCards/>}/><Metric label="Transactions" value={transactions.length} note={`${cats.length} spending categories`} icon={<FileSpreadsheet/>}/></div>
       <div className="chart-grid"><section className="panel"><div className="panel-title"><div><span>SPENDING MIX</span><h3>Where your money goes</h3></div></div><div className="donut-wrap"><Doughnut data={donut} options={{cutout:"68%",plugins:{legend:{display:false}}}}/><div className="donut-label"><strong>{fmt.format(analysis.expenses)}</strong><span>total spent</span></div></div><div className="legend">{cats.slice(0,6).map(([c,v],i)=><div key={c}><i style={{background:COLORS[i%COLORS.length]}}/><span>{c}</span><strong>{Math.round(v/analysis.expenses*100)}%</strong></div>)}</div></section>
       <section className="panel wide"><div className="panel-title"><div><span>MONTH BY MONTH</span><h3>Income and spending</h3></div></div><div className="bar-wrap"><Bar data={bars} options={{maintainAspectRatio:false,plugins:{legend:{position:"bottom",labels:{usePointStyle:true,boxWidth:8}}},scales:{x:{grid:{display:false}},y:{border:{display:false},grid:{color:"#EEF0F5"},ticks:{callback:v=>"$"+v/1000+"k"}}}}}/></div></section></div>
-      <section className="panel table-panel"><div className="panel-title"><div><span>CATEGORY DETAIL</span><h3>Your spending, ranked</h3></div></div><CategoryTable cats={cats} months={monthCount} total={analysis.expenses}/></section></>}
+      <section className="panel table-panel"><div className="panel-title"><div><span>CATEGORY &amp; SUBCATEGORY DETAIL</span><h3>Your spending, ranked</h3></div></div><CategoryTable cats={cats} subcategories={analysis.bySubcategory} months={monthCount} total={analysis.expenses}/></section></>}
       {tab==="budget" && <Budget cats={cats} months={monthCount} income={analysis.income/monthCount}/>}
       {tab==="transactions" && <Transactions rows={transactions} onCategoryChange={updateCategory}/>}
       {tab==="categorise" && <Categorise rows={transactions} categories={customCategories} onAddCategory={addCategory} onCategoryChange={updateCategory} onSubcategoryChange={updateSubcategory} onBulkCategoryChange={updateBulkCategory} onSubscriptionChange={updateSubscription} onExcludedChange={updateExcluded}/>}
@@ -468,7 +477,12 @@ function Dashboard({transactions,totalTransactions,updateCategory,updateSubcateg
   </div>;
 }
 function Metric({label,value,note,icon}) { return <section className="metric"><div className="metric-icon">{icon}</div><span>{label}</span><strong>{value}</strong><small>{note}</small></section> }
-function CategoryTable({cats,months,total}) { return <div className="data-table"><div className="table-row head"><span>Category</span><span>Total</span><span>Monthly avg.</span><span>Share</span></div>{cats.map(([c,v],i)=><div className="table-row" key={c}><span><i style={{background:COLORS[i%COLORS.length]}}/>{c}</span><strong>{fmt.format(v)}</strong><span>{fmt.format(v/months)}</span><span>{Math.round(v/total*100)}%</span></div>)}</div> }
+function CategoryTable({cats,subcategories,months,total}) {
+  return <div className="data-table"><div className="table-row head"><span>Category / subcategory</span><span>Total</span><span>Monthly avg.</span><span>Share</span></div>{cats.map(([category,value],i)=>{
+    const children=Object.entries(subcategories[category]||{}).sort((a,b)=>b[1]-a[1]);
+    return <React.Fragment key={category}><div className="table-row category-total"><span><i style={{background:COLORS[i%COLORS.length]}}/>{category}</span><strong>{fmt.format(value)}</strong><span>{fmt.format(value/months)}</span><span>{Math.round(value/total*100)}%</span></div>{children.map(([subcategory,childValue])=><div className="table-row subcategory-row" key={`${category}-${subcategory}`}><span>{subcategory}</span><strong>{fmt.format(childValue)}</strong><span>{fmt.format(childValue/months)}</span><span>{Math.round(childValue/value*100)}% of {category}</span></div>)}</React.Fragment>;
+  })}</div>;
+}
 function Budget({cats,months,income}) {
   const initial = Object.fromEntries(cats.map(([c,v])=>[c,Math.ceil((v/months)*1.05/10)*10]));
   const [targets,setTargets] = useState(initial);
