@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import Papa from "papaparse";
 import { Chart as ChartJS, ArcElement, CategoryScale, LinearScale, BarElement, Tooltip, Legend } from "chart.js";
@@ -8,7 +8,7 @@ import autoTable from "jspdf-autotable";
 import {
   ArrowRight, BarChart3, Check, ChevronRight, Download, FileSpreadsheet,
   FileText, Landmark, LockKeyhole, PieChart, RefreshCw, ShieldCheck,
-  Sparkles, Target, TrendingDown, UploadCloud, WalletCards, X
+  Sparkles, Star, Target, TrendingDown, UploadCloud, WalletCards, X
 } from "lucide-react";
 import "./styles.css";
 import "./filters.css";
@@ -53,6 +53,26 @@ function detectCategory(description, amount) {
   if (CATEGORY_RULES.find(([name, rule]) => name === "Transfers" && rule.test(description))) return "Transfers";
   if (amount > 0) return "Income";
   return CATEGORY_RULES.find(([, rule]) => rule.test(description))?.[0] || "Other";
+}
+function subscriptionKey(description) {
+  return description.toLowerCase().replace(/\b(receipt|date|card|visa purchase|eftpos|aud)\b/g," ").replace(/\d+/g," ").replace(/[^a-z]+/g," ").trim().split(" ").slice(0,4).join(" ");
+}
+function subscriptionKeys(rows) {
+  const merchants = new Map();
+  rows.filter(row=>row.amount<0).forEach(row => {
+    const key=subscriptionKey(row.description);
+    if (!key) return;
+    if (!merchants.has(key)) merchants.set(key,[]);
+    merchants.get(key).push(row);
+  });
+  const known=/netflix|spotify|disney|adobe|microsoft|google one|workspace|amazon prime|amznprime|chatgpt|claude|anthropic|render\.com|seats\.aero|subscription|insurance/i;
+  return new Set([...merchants].filter(([key,items])=>{
+    if (known.test(key)) return true;
+    const months=new Set(items.map(item=>item.date.slice(0,7)));
+    const amounts=items.map(item=>Math.abs(item.amount));
+    const average=amounts.reduce((sum,value)=>sum+value,0)/amounts.length;
+    return months.size>=2 && Math.max(...amounts)-Math.min(...amounts)<=Math.max(2,average*.05);
+  }).map(([key])=>key));
 }
 function toNumber(value) {
   if (typeof value === "number") return value;
@@ -236,6 +256,19 @@ function App() {
   const [dateTo, setDateTo] = useState("");
   const input = useRef();
 
+  useEffect(() => {
+    fetch("/api/transactions")
+      .then(response => response.ok ? response.json() : Promise.reject())
+      .then(({transactions:stored}) => {
+        if (stored?.length) {
+          setTransactions(stored);
+          setFileNames([...new Set(stored.map(row=>row.source).filter(Boolean))]);
+          setView("dashboard");
+        }
+      })
+      .catch(()=>{});
+  }, []);
+
   const availableMonths = useMemo(() => [...new Set(transactions.map(t=>t.date.slice(0,7)))].sort(), [transactions]);
   const filteredTransactions = useMemo(() => transactions.filter(t => {
     const month = t.date.slice(0,7);
@@ -267,10 +300,13 @@ function App() {
     if (!picked.length) return;
     setLoading(true); setError("");
     try {
-      const sets = await Promise.all(picked.map(parseFile));
+      const sets = await Promise.all(picked.map(async file => (await parseFile(file)).map(transaction=>({...transaction,source:file.name}))));
       const merged = sets.flat().sort((a,b)=>a.date.localeCompare(b.date));
       if (!merged.length) throw new Error("No transactions were found. Check that your file has date, description and amount columns.");
-      setTransactions(merged); setFileNames(picked.map(f=>f.name)); setView("dashboard");
+      const response = await fetch("/api/transactions", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({transactions:merged})});
+      if (!response.ok) throw new Error("Transactions were read but could not be saved to the local database.");
+      const { transactions:stored } = await response.json();
+      setTransactions(stored); setFileNames([...new Set(stored.map(row=>row.source).filter(Boolean))]); setView("dashboard");
     } catch(e) {
       const message = String(e?.message || "");
       setError(
@@ -304,10 +340,21 @@ function App() {
     autoTable(doc,{startY:48,head:[["Category","Total","Monthly average"]],body:Object.entries(analysis.byCategory).sort((a,b)=>b[1]-a[1]).map(([c,v])=>[c,fmt.format(v),fmt.format(v/analysis.months.length)])});
     doc.save("ledgerly-report.pdf");
   }
-  function updateCategory(row,value) {
+  async function updateCategory(row,value) {
+    if (row.id) {
+      const response = await fetch(`/api/transactions/${row.id}`, {method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({category:value})});
+      if (!response.ok) throw new Error("Category could not be saved");
+    }
     setTransactions(current => current.map(transaction => transaction===row ? {...transaction,category:value} : transaction));
   }
-  if (view === "dashboard") return <Dashboard {...{transactions:filteredTransactions,totalTransactions:transactions.length,updateCategory,analysis,tab,setTab,fileNames,exportExcel,exportPdf,availableMonths,dateFrom,setDateFrom,dateTo,setDateTo,onReset:()=>{setView("landing");setTransactions([]);setDateFrom("");setDateTo("")}}}/>;
+  async function updateSubscription(row,value) {
+    if (row.id) {
+      const response = await fetch(`/api/transactions/${row.id}`, {method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({isSubscription:value})});
+      if (!response.ok) throw new Error("Subscription flag could not be saved");
+    }
+    setTransactions(current => current.map(transaction => transaction===row ? {...transaction,isSubscription:value?1:0} : transaction));
+  }
+  if (view === "dashboard") return <Dashboard {...{transactions:filteredTransactions,totalTransactions:transactions.length,updateCategory,updateSubscription,analysis,tab,setTab,fileNames,exportExcel,exportPdf,availableMonths,dateFrom,setDateFrom,dateTo,setDateTo,onReset:()=>{setView("landing");setTransactions([]);setDateFrom("");setDateTo("")}}}/>;
   return <Landing {...{input,handleFiles,loading,error,dragging,setDragging,onSample:()=>{setTransactions(sample);setFileNames(["Sample statement"]);setView("dashboard")}}}/>;
 }
 
@@ -353,21 +400,22 @@ function Landing({input,handleFiles,loading,error,dragging,setDragging,onSample}
 }
 function Step({n,icon,title,text}) { return <article className="step"><span className="step-number">{n}</span><div className="step-icon">{icon}</div><h3>{title}</h3><p>{text}</p></article> }
 
-function Dashboard({transactions,totalTransactions,updateCategory,analysis,tab,setTab,fileNames,exportExcel,exportPdf,availableMonths,dateFrom,setDateFrom,dateTo,setDateTo,onReset}) {
+function Dashboard({transactions,totalTransactions,updateCategory,updateSubscription,analysis,tab,setTab,fileNames,exportExcel,exportPdf,availableMonths,dateFrom,setDateFrom,dateTo,setDateTo,onReset}) {
   const cats = Object.entries(analysis.byCategory).sort((a,b)=>b[1]-a[1]);
   const donut = {labels:cats.map(x=>x[0]),datasets:[{data:cats.map(x=>x[1]),backgroundColor:COLORS,borderWidth:0,hoverOffset:6}]};
   const bars = {labels:analysis.monthly.map(x=>new Date(x.month+"-02").toLocaleDateString("en-AU",{month:"short"})),datasets:[{label:"Income",data:analysis.monthly.map(x=>x.income),backgroundColor:"#B9E9DE",borderRadius:7},{label:"Spending",data:analysis.monthly.map(x=>x.expense),backgroundColor:"#6574F7",borderRadius:7}]};
   const monthCount = Math.max(analysis.months.length,1);
   return <div className="app-shell">
-    <aside><Brand/><div className="side-files"><span>ANALYSIS</span><button className={tab==="analysis"?"active":""} onClick={()=>setTab("analysis")}><PieChart size={18}/>Spending analysis</button><button className={tab==="budget"?"active":""} onClick={()=>setTab("budget")}><WalletCards size={18}/>Monthly budget</button><button className={tab==="transactions"?"active":""} onClick={()=>setTab("transactions")}><FileSpreadsheet size={18}/>Transactions</button></div><div className="file-box"><Landmark size={18}/><div><strong>{fileNames.length} source{fileNames.length!==1?"s":""}</strong><span>{transactions.length}{transactions.length!==totalTransactions?` of ${totalTransactions}`:""} transactions</span></div></div><button className="reset" onClick={onReset}><RefreshCw size={16}/>New analysis</button></aside>
+    <aside><Brand/><div className="side-files"><span>ANALYSIS</span><button className={tab==="analysis"?"active":""} onClick={()=>setTab("analysis")}><PieChart size={18}/>Spending analysis</button><button className={tab==="budget"?"active":""} onClick={()=>setTab("budget")}><WalletCards size={18}/>Monthly budget</button><button className={tab==="transactions"?"active":""} onClick={()=>setTab("transactions")}><FileSpreadsheet size={18}/>Transactions</button><button className={tab==="categorise"?"active":""} onClick={()=>setTab("categorise")}><Target size={18}/>Categorise</button></div><div className="file-box"><Landmark size={18}/><div><strong>{fileNames.length} source{fileNames.length!==1?"s":""}</strong><span>{transactions.length}{transactions.length!==totalTransactions?` of ${totalTransactions}`:""} transactions</span></div></div><button className="reset" onClick={onReset}><RefreshCw size={16}/>New analysis</button></aside>
     <div className="dash-main">
-      <header><div><span className="overline">YOUR MONEY SNAPSHOT</span><h1>{tab==="analysis"?"Spending analysis":tab==="budget"?"Monthly budget":"Transactions"}</h1></div><div className="header-tools"><div className="date-filters"><label><span>From</span><select value={dateFrom} onChange={e=>{setDateFrom(e.target.value);if(dateTo&&e.target.value>dateTo)setDateTo(e.target.value)}}><option value="">First month</option>{availableMonths.map(month=><option key={month} value={month}>{new Date(month+"-02").toLocaleDateString("en-AU",{month:"short",year:"numeric"})}</option>)}</select></label><label><span>To</span><select value={dateTo} onChange={e=>{setDateTo(e.target.value);if(dateFrom&&e.target.value<dateFrom)setDateFrom(e.target.value)}}><option value="">Latest month</option>{availableMonths.map(month=><option key={month} value={month}>{new Date(month+"-02").toLocaleDateString("en-AU",{month:"short",year:"numeric"})}</option>)}</select></label></div><div className="actions"><button onClick={exportPdf}><FileText size={16}/>PDF</button><button className="primary" onClick={exportExcel}><Download size={16}/>Export Excel</button></div></div></header>
+      <header><div><span className="overline">YOUR MONEY SNAPSHOT</span><h1>{tab==="analysis"?"Spending analysis":tab==="budget"?"Monthly budget":tab==="categorise"?"Categorise transactions":"Transactions"}</h1></div><div className="header-tools"><div className="date-filters"><label><span>From</span><select value={dateFrom} onChange={e=>{setDateFrom(e.target.value);if(dateTo&&e.target.value>dateTo)setDateTo(e.target.value)}}><option value="">First month</option>{availableMonths.map(month=><option key={month} value={month}>{new Date(month+"-02").toLocaleDateString("en-AU",{month:"short",year:"numeric"})}</option>)}</select></label><label><span>To</span><select value={dateTo} onChange={e=>{setDateTo(e.target.value);if(dateFrom&&e.target.value<dateFrom)setDateFrom(e.target.value)}}><option value="">Latest month</option>{availableMonths.map(month=><option key={month} value={month}>{new Date(month+"-02").toLocaleDateString("en-AU",{month:"short",year:"numeric"})}</option>)}</select></label></div><div className="actions"><button onClick={exportPdf}><FileText size={16}/>PDF</button><button className="primary" onClick={exportExcel}><Download size={16}/>Export Excel</button></div></div></header>
       {tab==="analysis" && <><div className="metric-grid"><Metric label="Average monthly spend" value={fmt.format(analysis.average)} note={`${analysis.months.length} month view`} icon={<TrendingDown/>}/><Metric label="Average monthly income" value={fmt.format(analysis.income/monthCount)} note={`${fmt.format(analysis.income-analysis.expenses)} net total`} icon={<WalletCards/>}/><Metric label="Transactions" value={transactions.length} note={`${cats.length} spending categories`} icon={<FileSpreadsheet/>}/></div>
       <div className="chart-grid"><section className="panel"><div className="panel-title"><div><span>SPENDING MIX</span><h3>Where your money goes</h3></div></div><div className="donut-wrap"><Doughnut data={donut} options={{cutout:"68%",plugins:{legend:{display:false}}}}/><div className="donut-label"><strong>{fmt.format(analysis.expenses)}</strong><span>total spent</span></div></div><div className="legend">{cats.slice(0,6).map(([c,v],i)=><div key={c}><i style={{background:COLORS[i%COLORS.length]}}/><span>{c}</span><strong>{Math.round(v/analysis.expenses*100)}%</strong></div>)}</div></section>
       <section className="panel wide"><div className="panel-title"><div><span>MONTH BY MONTH</span><h3>Income and spending</h3></div></div><div className="bar-wrap"><Bar data={bars} options={{maintainAspectRatio:false,plugins:{legend:{position:"bottom",labels:{usePointStyle:true,boxWidth:8}}},scales:{x:{grid:{display:false}},y:{border:{display:false},grid:{color:"#EEF0F5"},ticks:{callback:v=>"$"+v/1000+"k"}}}}}/></div></section></div>
       <section className="panel table-panel"><div className="panel-title"><div><span>CATEGORY DETAIL</span><h3>Your spending, ranked</h3></div></div><CategoryTable cats={cats} months={monthCount} total={analysis.expenses}/></section></>}
       {tab==="budget" && <Budget cats={cats} months={monthCount} income={analysis.income/monthCount}/>}
       {tab==="transactions" && <Transactions rows={transactions} onCategoryChange={updateCategory}/>}
+      {tab==="categorise" && <Categorise rows={transactions} onCategoryChange={updateCategory} onSubscriptionChange={updateSubscription}/>}
     </div>
   </div>;
 }
@@ -380,6 +428,30 @@ function Budget({cats,months,income}) {
   return <><div className="budget-hero"><div><span>RECOMMENDED PLAN</span><h2>Give every dollar a job.</h2><p>Targets start 5% above your recent average, giving you a realistic buffer.</p></div><div className="budget-ring"><span>Left after budget</span><strong className={income-total<0?"negative":""}>{fmt.format(income-total)}</strong><small>of {fmt.format(income)} income</small></div></div><section className="panel budget-panel"><div className="table-row budget-head"><span>Category</span><span>Recent average</span><span>Monthly target</span><span>Difference</span></div>{cats.map(([c,v],i)=>{const avg=v/months,diff=targets[c]-avg;return <div className="table-row budget-row" key={c}><span><i style={{background:COLORS[i%COLORS.length]}}/>{c}</span><span>{fmt.format(avg)}</span><label><b>$</b><input type="number" value={targets[c]} onChange={e=>setTargets({...targets,[c]:e.target.value})}/></label><span className={diff<0?"saving":""}>{diff>=0?"+":""}{fmt.format(diff)}</span></div>})}<div className="budget-total"><span>Total monthly budget</span><strong>{fmt.format(total)}</strong></div></section></>;
 }
 function Transactions({rows,onCategoryChange}) {
-  return <section className="panel transactions"><p className="helper">Review the detected categories. Changes update your analysis instantly.</p><div className="table-row tx-head"><span>Date</span><span>Description</span><span>Category</span><span>Amount</span></div>{rows.slice().reverse().map((r,reverseIndex)=><div className="table-row tx-row" key={`${r.date}-${r.description}-${reverseIndex}`}><span>{new Date(r.date+"T00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short",year:"numeric"})}</span><strong>{r.description}</strong><select value={r.category} onChange={e=>onCategoryChange(r,e.target.value)}>{[...CATEGORY_RULES.map(x=>x[0]),"Other"].filter((v,i,a)=>a.indexOf(v)===i).map(c=><option key={c}>{c}</option>)}</select><span className={r.amount>0?"positive":""}>{r.amount>0?"+":""}{fmt.format(r.amount)}</span></div>)}</section>
+  const recurring=subscriptionKeys(rows);
+  return <section className="panel transactions"><p className="helper">Review the detected categories. Changes update your analysis instantly.</p><div className="table-row tx-head"><span>Date</span><span>Description</span><span>Category</span><span>Amount</span></div>{rows.slice().reverse().map((r,reverseIndex)=>{const subscription=r.isSubscription||recurring.has(subscriptionKey(r.description));return <div className={`table-row tx-row ${subscription?"subscription-row":""}`} key={`${r.date}-${r.description}-${reverseIndex}`}><span>{new Date(r.date+"T00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short",year:"numeric"})}</span><strong>{r.description}{subscription&&<small className="subscription-pill"><Star size={10}/>Subscription</small>}</strong><select value={r.category} onChange={e=>onCategoryChange(r,e.target.value)}>{[...CATEGORY_RULES.map(x=>x[0]),"Other"].filter((v,i,a)=>a.indexOf(v)===i).map(c=><option key={c}>{c}</option>)}</select><span className={r.amount>0?"positive":""}>{r.amount>0?"+":""}{fmt.format(r.amount)}</span></div>})}</section>
+}
+function Categorise({rows,onCategoryChange,onSubscriptionChange}) {
+  const [search,setSearch] = useState("");
+  const [showCategory,setShowCategory] = useState("All");
+  const [selected,setSelected] = useState(new Set());
+  const [bulkCategory,setBulkCategory] = useState("Other");
+  const [subscriptionsOnly,setSubscriptionsOnly] = useState(false);
+  const categories = [...CATEGORY_RULES.map(rule=>rule[0]),"Other"].filter((value,index,array)=>array.indexOf(value)===index);
+  const recurring=subscriptionKeys(rows);
+  const isSubscription=row=>Boolean(row.isSubscription)||recurring.has(subscriptionKey(row.description));
+  const visible = rows.filter(row => (showCategory==="All" || row.category===showCategory) && (!search || row.description.toLowerCase().includes(search.toLowerCase())) && (!subscriptionsOnly||isSubscription(row)));
+  function toggle(id) {
+    setSelected(current => { const next=new Set(current); next.has(id)?next.delete(id):next.add(id); return next; });
+  }
+  async function applyBulk() {
+    const picked=rows.filter(row=>selected.has(row.id || `${row.date}-${row.description}`));
+    await Promise.all(picked.map(row=>onCategoryChange(row,bulkCategory)));
+    setSelected(new Set());
+  }
+  return <section className="panel categorise-page">
+    <div className="category-toolbar"><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search merchant or description"/><select value={showCategory} onChange={e=>setShowCategory(e.target.value)}><option>All</option>{categories.map(category=><option key={category}>{category}</option>)}</select><label className="subscription-filter"><input type="checkbox" checked={subscriptionsOnly} onChange={e=>setSubscriptionsOnly(e.target.checked)}/><Star size={14}/>Subscriptions only</label><div className="bulk-tools"><span>{selected.size} selected</span><select value={bulkCategory} onChange={e=>setBulkCategory(e.target.value)}>{categories.map(category=><option key={category}>{category}</option>)}</select><button disabled={!selected.size} onClick={applyBulk}>Apply category</button></div></div>
+    <div className="category-list"><div className="category-row category-head"><span></span><span>Date</span><span>Description</span><span>Amount</span><span>Category</span><span>Subscription</span></div>{visible.slice().reverse().map((row,index)=>{const key=row.id || `${row.date}-${row.description}`,subscription=isSubscription(row);return <div className={`category-row ${subscription?"subscription-row":""}`} key={`${key}-${index}`}><input type="checkbox" checked={selected.has(key)} onChange={()=>toggle(key)}/><span>{new Date(row.date+"T00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short",year:"numeric"})}</span><strong>{row.description}</strong><span className={row.amount>0?"positive":""}>{row.amount>0?"+":""}{fmt.format(row.amount)}</span><select value={row.category} onChange={e=>onCategoryChange(row,e.target.value)}>{categories.map(category=><option key={category}>{category}</option>)}</select><button className={`subscription-toggle ${row.isSubscription?"active":""}`} onClick={()=>onSubscriptionChange(row,!row.isSubscription)}><Star size={14}/>{row.isSubscription?"Marked":"Mark"}</button></div>})}</div>
+  </section>;
 }
 createRoot(document.getElementById("root")).render(<App/>);

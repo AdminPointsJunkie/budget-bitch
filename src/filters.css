@@ -39,6 +39,133 @@
   padding: 0 30px 0 10px;
 }
 
+.categorise-page {
+  padding: 18px 22px;
+}
+
+.category-toolbar {
+  align-items: center;
+  display: grid;
+  gap: 10px;
+  grid-template-columns: minmax(220px, 1fr) 160px auto auto;
+  margin-bottom: 18px;
+}
+
+.category-toolbar input,
+.category-toolbar select,
+.category-row select {
+  background: #fafafa;
+  border: 1px solid #dfe2e5;
+  border-radius: 8px;
+  min-height: 38px;
+  padding: 0 10px;
+}
+
+.bulk-tools {
+  align-items: center;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+}
+
+.bulk-tools > span {
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.bulk-tools button {
+  background: var(--ink);
+  border: 0;
+  border-radius: 8px;
+  color: white;
+  font-size: 12px;
+  font-weight: 700;
+  min-height: 38px;
+  padding: 0 14px;
+}
+
+.bulk-tools button:disabled {
+  cursor: not-allowed;
+  opacity: .4;
+}
+
+.category-list {
+  overflow-x: auto;
+}
+
+.category-row {
+  align-items: center;
+  border-bottom: 1px solid #eef0f2;
+  display: grid;
+  font-size: 12px;
+  gap: 12px;
+  grid-template-columns: 24px 110px minmax(250px, 1fr) 100px 160px 120px;
+  min-height: 54px;
+}
+
+.subscription-filter {
+  align-items: center;
+  color: #5968ed;
+  display: flex;
+  font-size: 11px;
+  font-weight: 700;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.subscription-filter input {
+  accent-color: var(--indigo);
+}
+
+.subscription-row {
+  background: #fffbeb;
+}
+
+.subscription-pill {
+  align-items: center;
+  background: #fff1bd;
+  border-radius: 99px;
+  color: #8a6500;
+  display: inline-flex;
+  font-size: 9px;
+  gap: 3px;
+  margin-left: 8px;
+  padding: 3px 6px;
+  vertical-align: middle;
+}
+
+.subscription-toggle {
+  align-items: center;
+  background: white;
+  border: 1px solid #dfe2e5;
+  border-radius: 7px;
+  color: #7d8792;
+  display: inline-flex;
+  font-size: 11px;
+  gap: 5px;
+  justify-content: center;
+  min-height: 32px;
+}
+
+.subscription-toggle.active {
+  background: #fff1bd;
+  border-color: #ebd16e;
+  color: #795c00;
+}
+
+.category-row > input {
+  accent-color: var(--indigo);
+}
+
+.category-head {
+  color: #8a939d;
+  font-size: 10px;
+  letter-spacing: .08em;
+  min-height: 34px;
+  text-transform: uppercase;
+}
+
 @media (max-width: 1100px) {
   .dash-main header {
     align-items: flex-start;
@@ -71,5 +198,14 @@
 
   .actions {
     justify-content: flex-end;
+  }
+
+  .category-toolbar {
+    grid-template-columns: 1fr;
+  }
+
+  .bulk-tools {
+    justify-content: flex-start;
+    overflow-x: auto;
   }
 }
