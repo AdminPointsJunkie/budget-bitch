@@ -477,6 +477,53 @@
   padding: 70px 20px;
 }
 
+.transactions-modal {
+  background: white;
+  border-radius: 14px;
+  box-shadow: 0 22px 70px rgba(15, 23, 42, .24);
+  max-height: min(760px, calc(100vh - 70px));
+  max-width: 860px;
+  overflow: hidden;
+  width: calc(100% - 40px);
+}
+
+.transactions-modal .modal-heading {
+  padding: 22px 24px 18px;
+}
+
+.transaction-popup-head,
+.transaction-popup-row {
+  align-items: center;
+  display: grid;
+  gap: 18px;
+  grid-template-columns: 110px minmax(260px, 1fr) 100px;
+}
+
+.transaction-popup-head {
+  background: #f6f7f9;
+  color: #7b8490;
+  font-size: 10px;
+  letter-spacing: .08em;
+  padding: 10px 24px;
+  text-transform: uppercase;
+}
+
+.transaction-popup-list {
+  max-height: min(570px, calc(100vh - 240px));
+  overflow-y: auto;
+}
+
+.transaction-popup-row {
+  border-bottom: 1px solid #edf0f2;
+  font-size: 12px;
+  min-height: 58px;
+  padding: 7px 24px;
+}
+
+.transaction-popup-row > strong:last-child {
+  text-align: right;
+}
+
 .sort-heading {
   align-items: center;
   background: none;
