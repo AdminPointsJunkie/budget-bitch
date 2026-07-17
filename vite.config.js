@@ -2,13 +2,14 @@ import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { mkdirSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
 const extractor = fileURLToPath(new URL("./scripts/extract_pdf.py", import.meta.url));
 const dataDirectory = fileURLToPath(new URL("./.data", import.meta.url));
 mkdirSync(dataDirectory, { recursive:true });
-const database = new DatabaseSync(`${dataDirectory}/ledgerly.db`);
+const databasePath = `${dataDirectory}/ledgerly.db`;
+const database = new DatabaseSync(databasePath);
 database.exec(`
   CREATE TABLE IF NOT EXISTS transactions (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -29,6 +30,35 @@ if (!database.prepare("PRAGMA table_info(transactions)").all().some(column=>colu
 }
 if (!database.prepare("PRAGMA table_info(transactions)").all().some(column=>column.name==="is_excluded")) {
   database.exec("ALTER TABLE transactions ADD COLUMN is_excluded INTEGER NOT NULL DEFAULT 0");
+}
+const transactionFingerprint = (date,description,amount) =>
+  `${date}|${String(description).trim().replace(/\s+/g," ").toUpperCase()}|${Number(amount).toFixed(2)}`;
+const storedTransactions = database.prepare("SELECT id, tx_date AS date, description, category, subcategory, amount, is_subscription AS isSubscription, is_excluded AS isExcluded FROM transactions ORDER BY id").all();
+const transactionGroups = new Map();
+for (const transaction of storedTransactions) {
+  const fingerprint=transactionFingerprint(transaction.date,transaction.description,transaction.amount);
+  if (!transactionGroups.has(fingerprint)) transactionGroups.set(fingerprint,[]);
+  transactionGroups.get(fingerprint).push(transaction);
+}
+const duplicateGroups=[...transactionGroups.entries()].filter(([,rows])=>rows.length>1);
+if (duplicateGroups.length) {
+  const backupPath=`${dataDirectory}/ledgerly-pre-dedupe.db`;
+  if (!existsSync(backupPath)) copyFileSync(databasePath,backupPath);
+  const remove=database.prepare("DELETE FROM transactions WHERE id = ?");
+  const setFingerprint=database.prepare("UPDATE transactions SET fingerprint = ? WHERE id = ?");
+  const editScore=transaction=>(transaction.subcategory?8:0)+(transaction.category!=="Other"?4:0)+(transaction.isExcluded?2:0)+(transaction.isSubscription?1:0);
+  database.exec("BEGIN");
+  try {
+    for (const [fingerprint,rows] of transactionGroups) {
+      const ordered=rows.slice().sort((a,b)=>editScore(b)-editScore(a)||a.id-b.id);
+      for (const duplicate of ordered.slice(1)) remove.run(duplicate.id);
+      setFingerprint.run(fingerprint,ordered[0].id);
+    }
+    database.exec("COMMIT");
+  } catch(error) {
+    database.exec("ROLLBACK");
+    throw error;
+  }
 }
 database.exec(`
   CREATE TABLE IF NOT EXISTS categories (
@@ -110,7 +140,7 @@ function localDataServices() {
             try {
               for (const transaction of transactions) {
                 const source = transaction.source || "";
-                const fingerprint = `${transaction.date}|${transaction.description}|${Number(transaction.amount).toFixed(2)}|${source}`;
+                const fingerprint = transactionFingerprint(transaction.date,transaction.description,transaction.amount);
                 insert.run(transaction.date, transaction.description, transaction.category, transaction.subcategory||"", transaction.amount, source, fingerprint, transaction.isSubscription?1:0, transaction.isExcluded?1:0);
               }
               database.exec("COMMIT");
