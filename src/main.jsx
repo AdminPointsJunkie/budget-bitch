@@ -85,6 +85,17 @@ function parsePdfStatement(lines) {
     if (!line || /opening balance|closing balance|balance brought forward|transaction total|total new|total of new|statement period|statement from|page \d+ of|transaction date|date transaction details/i.test(line)) continue;
     let match;
 
+    if (isIng && (match=line.match(/^(\d{1,2})\s+([A-Za-z]{3})\s+(\d{4})\s+(.+)$/))) {
+      const amounts = match[4].match(MONEY_AT_END) || [];
+      if (!amounts.length) continue;
+      const description = match[4].slice(0,match[4].lastIndexOf(amounts[0])).trim();
+      let amount = toNumber(amounts[0]);
+      if (isMortgage) amount = -Math.abs(amount);
+      const category = isMortgage ? "Housing" : detectCategory(description,amount);
+      lastRow = {date:isoDate(match[3],MONTHS[match[2].toLowerCase()],match[1]),description,amount,category};
+      rows.push(lastRow); continue;
+    }
+
     if (isIng && (match=line.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})\s+(.+)$/))) {
       const amounts = match[4].match(MONEY_AT_END) || [];
       if (!amounts.length || /rate changed/i.test(match[4])) continue;
