@@ -68,6 +68,7 @@ database.exec(`
     UNIQUE(name, parent_id)
   )
 `);
+database.exec("CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
 const duplicateParents = database.prepare("SELECT name, MIN(id) AS keep_id FROM categories WHERE parent_id IS NULL GROUP BY name HAVING COUNT(*) > 1").all();
 for (const duplicate of duplicateParents) {
   const duplicateIds = database.prepare("SELECT id FROM categories WHERE parent_id IS NULL AND name = ? AND id != ?").all(duplicate.name, duplicate.keep_id);
@@ -83,6 +84,23 @@ database.exec("CREATE UNIQUE INDEX IF NOT EXISTS categories_unique_name_parent O
 const defaultCategories = ["Housing","Groceries","Dining","Transport","Utilities","Shopping","Entertainment","Health","Insurance","Transfers","Income","Other"];
 const seedCategory = database.prepare("INSERT OR IGNORE INTO categories (name, parent_id) VALUES (?, NULL)");
 if (!database.prepare("SELECT COUNT(*) AS count FROM categories").get().count) defaultCategories.forEach(name=>seedCategory.run(name));
+if (!database.prepare("SELECT value FROM app_meta WHERE key = 'interest_categories_v1'").get()) {
+  database.prepare("INSERT OR IGNORE INTO categories (name, parent_id) VALUES ('Interest', NULL)").run();
+  const interestId=database.prepare("SELECT id FROM categories WHERE name = 'Interest' AND parent_id IS NULL").get().id;
+  database.prepare("INSERT OR IGNORE INTO categories (name, parent_id) VALUES ('Mortgage interest', ?)").run(interestId);
+  database.prepare("INSERT OR IGNORE INTO categories (name, parent_id) VALUES ('Credit card interest', ?)").run(interestId);
+  database.prepare(`UPDATE transactions SET category = 'Interest', subcategory = CASE
+    WHEN LOWER(source) LIKE '%mortgage%' OR ABS(amount) >= 1000 THEN 'Mortgage interest'
+    ELSE 'Credit card interest'
+  END WHERE UPPER(TRIM(description)) = 'INTEREST CHARGE'`).run();
+  database.prepare("INSERT INTO app_meta (key, value) VALUES ('interest_categories_v1', 'complete')").run();
+}
+
+function interestClassification(description,amount,source) {
+  if (String(description).trim().toUpperCase()!=="INTEREST CHARGE") return null;
+  const mortgage=/mortgage/i.test(String(source)) || Math.abs(Number(amount))>=1000;
+  return {category:"Interest",subcategory:mortgage?"Mortgage interest":"Credit card interest"};
+}
 
 function readBody(req, limit = 30 * 1024 * 1024) {
   return new Promise((resolve, reject) => {
@@ -141,7 +159,8 @@ function localDataServices() {
               for (const transaction of transactions) {
                 const source = transaction.source || "";
                 const fingerprint = transactionFingerprint(transaction.date,transaction.description,transaction.amount);
-                insert.run(transaction.date, transaction.description, transaction.category, transaction.subcategory||"", transaction.amount, source, fingerprint, transaction.isSubscription?1:0, transaction.isExcluded?1:0);
+                const interest=interestClassification(transaction.description,transaction.amount,source);
+                insert.run(transaction.date, transaction.description, interest?.category||transaction.category, interest?.subcategory||transaction.subcategory||"", transaction.amount, source, fingerprint, transaction.isSubscription?1:0, transaction.isExcluded?1:0);
               }
               database.exec("COMMIT");
             } catch (error) {
