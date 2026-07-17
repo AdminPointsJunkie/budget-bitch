@@ -1,0 +1,75 @@
+.dash-main header {
+  gap: 24px;
+}
+
+.header-tools {
+  align-items: flex-end;
+  display: flex;
+  gap: 14px;
+}
+
+.date-filters {
+  display: flex;
+  gap: 8px;
+}
+
+.date-filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.date-filters label > span {
+  color: #838c98;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+
+.date-filters select {
+  background: white;
+  border: 1px solid #dadddf;
+  border-radius: 9px;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 600;
+  height: 38px;
+  min-width: 125px;
+  padding: 0 30px 0 10px;
+}
+
+@media (max-width: 1100px) {
+  .dash-main header {
+    align-items: flex-start;
+  }
+
+  .header-tools {
+    align-items: flex-end;
+    flex-direction: column;
+  }
+}
+
+@media (max-width: 640px) {
+  .dash-main header {
+    flex-direction: column;
+  }
+
+  .header-tools {
+    align-items: stretch;
+    width: 100%;
+  }
+
+  .date-filters label {
+    flex: 1;
+  }
+
+  .date-filters select {
+    min-width: 0;
+    width: 100%;
+  }
+
+  .actions {
+    justify-content: flex-end;
+  }
+}
