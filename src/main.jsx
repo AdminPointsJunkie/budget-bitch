@@ -343,16 +343,26 @@ function App() {
     autoTable(doc,{startY:48,head:[["Category","Total","Monthly average"]],body:Object.entries(analysis.byCategory).sort((a,b)=>b[1]-a[1]).map(([c,v])=>[c,fmt.format(v),fmt.format(v/analysis.months.length)])});
     doc.save("ledgerly-report.pdf");
   }
+  const sameTransaction = (transaction,row) => row.id ? transaction.id===row.id : transaction===row;
   async function updateCategory(row,value) {
-    if (row.id) {
-      const response = await fetch(`/api/transactions/${row.id}`, {method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({category:value,subcategory:""})});
-      if (!response.ok) throw new Error("Category could not be saved");
+    const previous={category:row.category,subcategory:row.subcategory||""};
+    setTransactions(current => current.map(transaction => sameTransaction(transaction,row) ? {...transaction,category:value,subcategory:""} : transaction));
+    if (!row.id) return;
+    const response = await fetch(`/api/transactions/${row.id}`, {method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({category:value,subcategory:""})});
+    if (!response.ok) {
+      setTransactions(current => current.map(transaction => sameTransaction(transaction,row) ? {...transaction,...previous} : transaction));
+      throw new Error("Category could not be saved");
     }
-    setTransactions(current => current.map(transaction => transaction===row ? {...transaction,category:value,subcategory:""} : transaction));
   }
   async function updateSubcategory(row,value) {
-    if (row.id) await fetch(`/api/transactions/${row.id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({subcategory:value})});
-    setTransactions(current=>current.map(transaction=>transaction===row?{...transaction,subcategory:value}:transaction));
+    const previous=row.subcategory||"";
+    setTransactions(current=>current.map(transaction=>sameTransaction(transaction,row)?{...transaction,subcategory:value}:transaction));
+    if (!row.id) return;
+    const response=await fetch(`/api/transactions/${row.id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({subcategory:value})});
+    if (!response.ok) {
+      setTransactions(current=>current.map(transaction=>sameTransaction(transaction,row)?{...transaction,subcategory:previous}:transaction));
+      throw new Error("Subcategory could not be saved");
+    }
   }
   async function addCategory(name,parentId=null) {
     const response=await fetch("/api/categories",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,parentId})});
@@ -361,18 +371,24 @@ function App() {
     setCustomCategories(data.categories);
   }
   async function updateSubscription(row,value) {
-    if (row.id) {
-      const response = await fetch(`/api/transactions/${row.id}`, {method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({isSubscription:value})});
-      if (!response.ok) throw new Error("Subscription flag could not be saved");
+    const previous=row.isSubscription;
+    setTransactions(current => current.map(transaction => sameTransaction(transaction,row) ? {...transaction,isSubscription:value?1:0} : transaction));
+    if (!row.id) return;
+    const response = await fetch(`/api/transactions/${row.id}`, {method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({isSubscription:value})});
+    if (!response.ok) {
+      setTransactions(current => current.map(transaction => sameTransaction(transaction,row) ? {...transaction,isSubscription:previous} : transaction));
+      throw new Error("Subscription flag could not be saved");
     }
-    setTransactions(current => current.map(transaction => transaction===row ? {...transaction,isSubscription:value?1:0} : transaction));
   }
   async function updateExcluded(row,value) {
-    if (row.id) {
-      const response=await fetch(`/api/transactions/${row.id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({isExcluded:value})});
-      if (!response.ok) throw new Error("Excluded status could not be saved");
+    const previous=row.isExcluded;
+    setTransactions(current=>current.map(transaction=>sameTransaction(transaction,row)?{...transaction,isExcluded:value?1:0}:transaction));
+    if (!row.id) return;
+    const response=await fetch(`/api/transactions/${row.id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({isExcluded:value})});
+    if (!response.ok) {
+      setTransactions(current=>current.map(transaction=>sameTransaction(transaction,row)?{...transaction,isExcluded:previous}:transaction));
+      throw new Error("Excluded status could not be saved");
     }
-    setTransactions(current=>current.map(transaction=>transaction===row?{...transaction,isExcluded:value?1:0}:transaction));
   }
   if (view === "dashboard") return <Dashboard {...{transactions:filteredTransactions,totalTransactions:transactions.length,updateCategory,updateSubcategory,updateSubscription,updateExcluded,customCategories,addCategory,analysis,tab,setTab,fileNames,exportExcel,exportPdf,availableMonths,dateFrom,setDateFrom,dateTo,setDateTo,onReset:()=>{setView("landing");setTransactions([]);setDateFrom("");setDateTo("")}}}/>;
   return <Landing {...{input,handleFiles,loading,error,dragging,setDragging,onSample:()=>{setTransactions(sample);setFileNames(["Sample statement"]);setView("dashboard")}}}/>;
