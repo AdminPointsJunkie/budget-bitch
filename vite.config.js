@@ -423,6 +423,12 @@ function localDataServices() {
           sendJson(res,{error:error.message},400);
         }
       });
+      server.middlewares.use("/api/system/photos",(req,res,next)=>{
+        if (req.method!=="POST") return next();
+        const child=spawn("open",["-a","Photos"],{stdio:"ignore"});
+        child.unref();
+        sendJson(res,{ok:true});
+      });
       server.middlewares.use("/api/transactions", async (req, res, next) => {
         try {
           if (req.method === "GET" && req.url === "/") {
