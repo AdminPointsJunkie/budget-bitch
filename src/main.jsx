@@ -30,6 +30,22 @@ const CATEGORY_RULES = [
 ];
 const COLORS = ["#5F6FFF", "#FF8B6A", "#26B99A", "#F2BC57", "#9A74E8", "#4AA8D8", "#ED6C8C", "#7D8C98", "#A3C95B"];
 const fmt = new Intl.NumberFormat("en-AU", { style: "currency", currency: "AUD", maximumFractionDigits: 0 });
+let activeLedgerId = localStorage.getItem("budget-bitch-ledger") || "johns-ledger";
+
+function apiFetch(url, options = {}) {
+  return window.fetch(url, {
+    ...options,
+    headers: {
+      ...(options.headers || {}),
+      "X-Ledger-Id": activeLedgerId
+    }
+  });
+}
+
+function ledgerFileUrl(url) {
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}ledgerId=${encodeURIComponent(activeLedgerId)}`;
+}
 
 const sample = [
   ["2026-05-01","Salary","Income",5200],["2026-05-02","Rent payment","Housing",-1850],
@@ -251,7 +267,7 @@ async function parseFile(file) {
     });
   }
   if (ext === "pdf") {
-    const response = await fetch("/api/parse-pdf", {
+    const response = await apiFetch("/api/parse-pdf", {
       method:"POST",
       headers:{"Content-Type":"application/pdf","X-Statement-Filename":encodeURIComponent(file.name)},
       body:await file.arrayBuffer()
@@ -279,10 +295,22 @@ function App() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [customCategories,setCustomCategories] = useState([]);
+  const [ledgers,setLedgers] = useState([]);
   const input = useRef();
 
   useEffect(() => {
-    fetch("/api/transactions")
+    window.fetch("/api/ledgers")
+      .then(response=>response.json())
+      .then(data=>{
+        const available=data.ledgers||[];
+        if (available.length && !available.some(ledger=>ledger.id===activeLedgerId)) {
+          activeLedgerId=available[0].id;
+          localStorage.setItem("budget-bitch-ledger",activeLedgerId);
+        }
+        setLedgers(available);
+      })
+      .catch(()=>{});
+    apiFetch("/api/transactions")
       .then(response => response.ok ? response.json() : Promise.reject())
       .then(({transactions:stored}) => {
         if (stored?.length) {
@@ -292,8 +320,39 @@ function App() {
         }
       })
       .catch(()=>{});
-    fetch("/api/categories").then(response=>response.json()).then(data=>setCustomCategories(data.categories||[])).catch(()=>{});
+    apiFetch("/api/categories").then(response=>response.json()).then(data=>setCustomCategories(data.categories||[])).catch(()=>{});
   }, []);
+
+  function switchLedger(id) {
+    if (!id || id===activeLedgerId) return;
+    activeLedgerId=id;
+    localStorage.setItem("budget-bitch-ledger",id);
+    window.location.reload();
+  }
+  async function createLedger() {
+    const name=window.prompt("Name your new ledger","New Ledger");
+    if (!name?.trim()) return;
+    const response=await window.fetch("/api/ledgers",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:name.trim()})});
+    const data=await response.json().catch(()=>({}));
+    if (!response.ok) {
+      window.alert(data.error||"The ledger could not be created.");
+      return;
+    }
+    switchLedger(data.ledger.id);
+  }
+  async function renameLedger() {
+    const current=ledgers.find(ledger=>ledger.id===activeLedgerId);
+    if (!current) return;
+    const name=window.prompt("Rename this ledger",current.name);
+    if (!name?.trim() || name.trim()===current.name) return;
+    const response=await window.fetch(`/api/ledgers/${encodeURIComponent(current.id)}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({name:name.trim()})});
+    const data=await response.json().catch(()=>({}));
+    if (!response.ok) {
+      window.alert(data.error||"The ledger could not be renamed.");
+      return;
+    }
+    setLedgers(data.ledgers||ledgers);
+  }
 
   const availableMonths = useMemo(() => [...new Set(transactions.map(t=>t.date.slice(0,7)))].sort(), [transactions]);
   const filteredTransactions = useMemo(() => transactions.filter(t => {
@@ -339,7 +398,7 @@ function App() {
       const sets = await Promise.all(picked.map(async file => (await parseFile(file)).map(transaction=>({...transaction,source:transaction.source||file.name}))));
       const merged = sets.flat().sort((a,b)=>a.date.localeCompare(b.date));
       if (!merged.length) throw new Error("No transactions were found. Check that your file has date, description and amount columns.");
-      const response = await fetch("/api/transactions", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({transactions:merged})});
+      const response = await apiFetch("/api/transactions", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({transactions:merged})});
       if (!response.ok) throw new Error("Transactions were read but could not be saved to the local database.");
       const { transactions:stored } = await response.json();
       setTransactions(stored); setFileNames([...new Set(stored.map(row=>row.source).filter(Boolean))]); setView("dashboard");
@@ -381,7 +440,7 @@ function App() {
     const previous={category:row.category,subcategory:row.subcategory||""};
     setTransactions(current => current.map(transaction => sameTransaction(transaction,row) ? {...transaction,category:value,subcategory:""} : transaction));
     if (!row.id) return;
-    const response = await fetch(`/api/transactions/${row.id}`, {method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({category:value,subcategory:""})});
+    const response = await apiFetch(`/api/transactions/${row.id}`, {method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({category:value,subcategory:""})});
     if (!response.ok) {
       setTransactions(current => current.map(transaction => sameTransaction(transaction,row) ? {...transaction,...previous} : transaction));
       throw new Error("Category could not be saved");
@@ -391,7 +450,7 @@ function App() {
     const previous=row.subcategory||"";
     setTransactions(current=>current.map(transaction=>sameTransaction(transaction,row)?{...transaction,subcategory:value}:transaction));
     if (!row.id) return;
-    const response=await fetch(`/api/transactions/${row.id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({subcategory:value})});
+    const response=await apiFetch(`/api/transactions/${row.id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({subcategory:value})});
     if (!response.ok) {
       setTransactions(current=>current.map(transaction=>sameTransaction(transaction,row)?{...transaction,subcategory:previous}:transaction));
       throw new Error("Subcategory could not be saved");
@@ -403,37 +462,37 @@ function App() {
     const previous=new Map(rows.map(row=>[row.id,{category:row.category,subcategory:row.subcategory||""}]));
     setTransactions(current=>current.map(transaction=>keys.has(transaction.id)?{...transaction,category,subcategory}:transaction));
     if (!ids.length) return;
-    const response=await fetch("/api/transactions/bulk",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({ids,category,subcategory})});
+    const response=await apiFetch("/api/transactions/bulk",{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({ids,category,subcategory})});
     if (!response.ok) {
       setTransactions(current=>current.map(transaction=>keys.has(transaction.id)?{...transaction,...previous.get(transaction.id)}:transaction));
       throw new Error("Bulk category update could not be saved");
     }
   }
   async function addCategory(name,parentId=null) {
-    const response=await fetch("/api/categories",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,parentId})});
+    const response=await apiFetch("/api/categories",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({name,parentId})});
     const data=await response.json();
     if (!response.ok) throw new Error(data.error||"Could not add category");
     setCustomCategories(data.categories);
   }
   async function renameCategory(id,name) {
-    const response=await fetch(`/api/categories/${id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});
+    const response=await apiFetch(`/api/categories/${id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});
     const data=await response.json();
     if (!response.ok) throw new Error(data.error||"Category could not be renamed");
     setCustomCategories(data.categories);
-    const stored=await fetch("/api/transactions").then(result=>result.json());
+    const stored=await apiFetch("/api/transactions").then(result=>result.json());
     setTransactions(stored.transactions||[]);
   }
   async function deleteCategory(id) {
-    const response=await fetch(`/api/categories/${id}`,{method:"DELETE"});
+    const response=await apiFetch(`/api/categories/${id}`,{method:"DELETE"});
     const data=await response.json();
     if (!response.ok) throw new Error(data.error||"Category could not be deleted");
     setCustomCategories(data.categories);
-    const stored=await fetch("/api/transactions").then(result=>result.json());
+    const stored=await apiFetch("/api/transactions").then(result=>result.json());
     setTransactions(stored.transactions||[]);
   }
   async function deleteTransaction(row) {
     if (row.id) {
-      const response=await fetch(`/api/transactions/${row.id}`,{method:"DELETE"});
+      const response=await apiFetch(`/api/transactions/${row.id}`,{method:"DELETE"});
       if (!response.ok) throw new Error("Transaction could not be deleted");
     }
     setTransactions(current=>current.filter(transaction=>!sameTransaction(transaction,row)));
@@ -441,7 +500,7 @@ function App() {
   async function deleteTransactions(rows) {
     const ids=rows.map(row=>row.id).filter(Boolean);
     if (ids.length) {
-      const response=await fetch("/api/transactions/bulk",{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({ids})});
+      const response=await apiFetch("/api/transactions/bulk",{method:"DELETE",headers:{"Content-Type":"application/json"},body:JSON.stringify({ids})});
       if (!response.ok) throw new Error("Transactions could not be deleted");
     }
     const keys=new Set(ids);
@@ -451,7 +510,7 @@ function App() {
     const previous=row.isSubscription;
     setTransactions(current => current.map(transaction => sameTransaction(transaction,row) ? {...transaction,isSubscription:value?1:0} : transaction));
     if (!row.id) return;
-    const response = await fetch(`/api/transactions/${row.id}`, {method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({isSubscription:value})});
+    const response = await apiFetch(`/api/transactions/${row.id}`, {method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({isSubscription:value})});
     if (!response.ok) {
       setTransactions(current => current.map(transaction => sameTransaction(transaction,row) ? {...transaction,isSubscription:previous} : transaction));
       throw new Error("Subscription flag could not be saved");
@@ -461,7 +520,7 @@ function App() {
     const previous=row.isExcluded;
     setTransactions(current=>current.map(transaction=>sameTransaction(transaction,row)?{...transaction,isExcluded:value?1:0}:transaction));
     if (!row.id) return;
-    const response=await fetch(`/api/transactions/${row.id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({isExcluded:value})});
+    const response=await apiFetch(`/api/transactions/${row.id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({isExcluded:value})});
     if (!response.ok) {
       setTransactions(current=>current.map(transaction=>sameTransaction(transaction,row)?{...transaction,isExcluded:previous}:transaction));
       throw new Error("Excluded status could not be saved");
@@ -473,7 +532,7 @@ function App() {
     const previous=row.amount;
     setTransactions(current=>current.map(transaction=>sameTransaction(transaction,row)?{...transaction,amount}:transaction));
     if (!row.id) return;
-    const response=await fetch(`/api/transactions/${row.id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({amount})});
+    const response=await apiFetch(`/api/transactions/${row.id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({amount})});
     if (!response.ok) {
       setTransactions(current=>current.map(transaction=>sameTransaction(transaction,row)?{...transaction,amount:previous}:transaction));
       const data=await response.json().catch(()=>({}));
@@ -483,16 +542,27 @@ function App() {
   function updateReceiptCount(row,count) {
     setTransactions(current=>current.map(transaction=>sameTransaction(transaction,row)?{...transaction,receiptCount:count}:transaction));
   }
-  if (view === "dashboard") return <Dashboard {...{transactions:filteredTransactions,totalTransactions:transactions.length,updateCategory,updateSubcategory,updateBulkCategory,updateSubscription,updateExcluded,updateAmount,updateReceiptCount,deleteTransaction,deleteTransactions,customCategories,addCategory,renameCategory,deleteCategory,analysis,tab,setTab,fileNames,exportExcel,exportPdf,availableMonths,dateFrom,setDateFrom,dateTo,setDateTo,input,handleFiles,loading,error,onReset:()=>{setView("landing");setTransactions([]);setDateFrom("");setDateTo("")}}}/>;
-  return <Landing {...{input,handleFiles,loading,error,dragging,setDragging,onSample:()=>{setTransactions(sample);setFileNames(["Sample statement"]);setView("dashboard")}}}/>;
+  const ledgerControls={ledgers,activeLedgerId,switchLedger,createLedger,renameLedger};
+  if (view === "dashboard") return <Dashboard {...{...ledgerControls,transactions:filteredTransactions,totalTransactions:transactions.length,updateCategory,updateSubcategory,updateBulkCategory,updateSubscription,updateExcluded,updateAmount,updateReceiptCount,deleteTransaction,deleteTransactions,customCategories,addCategory,renameCategory,deleteCategory,analysis,tab,setTab,fileNames,exportExcel,exportPdf,availableMonths,dateFrom,setDateFrom,dateTo,setDateTo,input,handleFiles,loading,error,onReset:()=>{setView("landing");setTransactions([]);setDateFrom("");setDateTo("")}}}/>;
+  return <Landing {...{...ledgerControls,input,handleFiles,loading,error,dragging,setDragging,onSample:()=>{setTransactions(sample);setFileNames(["Sample statement"]);setView("dashboard")}}}/>;
 }
 
 function Brand() {
   return <div className="brand"><span className="brandmark"><BarChart3 size={20}/></span><span>Budget Bitch!</span></div>;
 }
-function Landing({input,handleFiles,loading,error,dragging,setDragging,onSample}) {
+function LedgerSwitcher({ledgers,activeLedgerId,switchLedger,createLedger,renameLedger,compact=false}) {
+  const current=ledgers.find(ledger=>ledger.id===activeLedgerId);
+  return <div className={`ledger-switcher ${compact?"compact":""}`}>
+    <span>LEDGER</span>
+    <select aria-label="Active ledger" value={current?.id||activeLedgerId} onChange={event=>switchLedger(event.target.value)}>
+      {ledgers.map(ledger=><option key={ledger.id} value={ledger.id}>{ledger.name}</option>)}
+    </select>
+    <div><button onClick={createLedger}>+ New</button><button onClick={renameLedger} disabled={!current}>Rename</button></div>
+  </div>;
+}
+function Landing({input,handleFiles,loading,error,dragging,setDragging,onSample,ledgers,activeLedgerId,switchLedger,createLedger,renameLedger}) {
   return <div className="landing">
-    <nav><Brand/><div className="navlinks"><a href="#how">How it works</a><a href="#privacy">Privacy</a><button className="nav-cta" onClick={()=>input.current.click()}>Start analysing <ArrowRight size={16}/></button></div></nav>
+    <nav><Brand/><LedgerSwitcher compact {...{ledgers,activeLedgerId,switchLedger,createLedger,renameLedger}}/><div className="navlinks"><a href="#how">How it works</a><a href="#privacy">Privacy</a><button className="nav-cta" onClick={()=>input.current.click()}>Start analysing <ArrowRight size={16}/></button></div></nav>
     <main>
       <section className="hero">
         <div className="eyebrow"><Sparkles size={14}/> Your money, made clear</div>
@@ -529,7 +599,7 @@ function Landing({input,handleFiles,loading,error,dragging,setDragging,onSample}
 }
 function Step({n,icon,title,text}) { return <article className="step"><span className="step-number">{n}</span><div className="step-icon">{icon}</div><h3>{title}</h3><p>{text}</p></article> }
 
-function Dashboard({transactions,totalTransactions,updateCategory,updateSubcategory,updateBulkCategory,updateSubscription,updateExcluded,updateAmount,updateReceiptCount,deleteTransaction,deleteTransactions,customCategories,addCategory,renameCategory,deleteCategory,analysis,tab,setTab,fileNames,exportExcel,exportPdf,availableMonths,dateFrom,setDateFrom,dateTo,setDateTo,input,handleFiles,loading,error,onReset}) {
+function Dashboard({transactions,totalTransactions,updateCategory,updateSubcategory,updateBulkCategory,updateSubscription,updateExcluded,updateAmount,updateReceiptCount,deleteTransaction,deleteTransactions,customCategories,addCategory,renameCategory,deleteCategory,analysis,tab,setTab,fileNames,exportExcel,exportPdf,availableMonths,dateFrom,setDateFrom,dateTo,setDateTo,input,handleFiles,loading,error,onReset,ledgers,activeLedgerId,switchLedger,createLedger,renameLedger}) {
   const cats = Object.entries(analysis.byCategory).sort((a,b)=>b[1]-a[1]);
   const donut = {labels:cats.map(x=>x[0]),datasets:[{data:cats.map(x=>x[1]),backgroundColor:COLORS,borderWidth:0,hoverOffset:6}]};
   const bars = {labels:analysis.monthly.map(x=>new Date(x.month+"-02").toLocaleDateString("en-AU",{month:"short"})),datasets:[{label:"Income",data:analysis.monthly.map(x=>x.income),backgroundColor:"#B9E9DE",borderRadius:7},{label:"Spending",data:analysis.monthly.map(x=>x.expense),backgroundColor:"#6574F7",borderRadius:7}]};
@@ -537,7 +607,7 @@ function Dashboard({transactions,totalTransactions,updateCategory,updateSubcateg
   const barRevision=analysis.monthly.map(month=>`${month.month}:${month.income}:${month.expense}`).join("|");
   const monthCount = Math.max(analysis.months.length,1);
   return <div className="app-shell">
-    <aside><Brand/><div className="side-files"><span>ANALYSIS</span><button className={tab==="analysis"?"active":""} onClick={()=>setTab("analysis")}><PieChart size={18}/>Spending analysis</button><button className={tab==="budget"?"active":""} onClick={()=>setTab("budget")}><WalletCards size={18}/>Monthly budget</button><button className={tab==="transactions"?"active":""} onClick={()=>setTab("transactions")}><FileSpreadsheet size={18}/>Transactions</button><button className={tab==="categorise"?"active":""} onClick={()=>setTab("categorise")}><Target size={18}/>Categorise</button><button className={tab==="accounts"?"active":""} onClick={()=>setTab("accounts")}><Landmark size={18}/>Accounts</button><button className={tab==="statements"?"active":""} onClick={()=>setTab("statements")}><FileText size={18}/>Statements</button><button className={tab==="paytax"?"active":""} onClick={()=>setTab("paytax")}><FileSpreadsheet size={18}/>Pay &amp; tax</button></div><div className="file-box"><Landmark size={18}/><div><strong>{fileNames.length} source{fileNames.length!==1?"s":""}</strong><span>{transactions.length}{transactions.length!==totalTransactions?` of ${totalTransactions}`:""} transactions</span></div></div><button className="reset" onClick={onReset}><RefreshCw size={16}/>New analysis</button></aside>
+    <aside><Brand/><LedgerSwitcher {...{ledgers,activeLedgerId,switchLedger,createLedger,renameLedger}}/><div className="side-files"><span>ANALYSIS</span><button className={tab==="analysis"?"active":""} onClick={()=>setTab("analysis")}><PieChart size={18}/>Spending analysis</button><button className={tab==="budget"?"active":""} onClick={()=>setTab("budget")}><WalletCards size={18}/>Monthly budget</button><button className={tab==="transactions"?"active":""} onClick={()=>setTab("transactions")}><FileSpreadsheet size={18}/>Transactions</button><button className={tab==="categorise"?"active":""} onClick={()=>setTab("categorise")}><Target size={18}/>Categorise</button><button className={tab==="accounts"?"active":""} onClick={()=>setTab("accounts")}><Landmark size={18}/>Accounts</button><button className={tab==="statements"?"active":""} onClick={()=>setTab("statements")}><FileText size={18}/>Statements</button><button className={tab==="paytax"?"active":""} onClick={()=>setTab("paytax")}><FileSpreadsheet size={18}/>Pay &amp; tax</button></div><div className="file-box"><Landmark size={18}/><div><strong>{fileNames.length} source{fileNames.length!==1?"s":""}</strong><span>{transactions.length}{transactions.length!==totalTransactions?` of ${totalTransactions}`:""} transactions</span></div></div><button className="reset" onClick={onReset}><RefreshCw size={16}/>New analysis</button></aside>
     <div className="dash-main">
       <input ref={input} type="file" hidden multiple accept=".csv,.xlsx,.ofx,.pdf" onChange={e=>{handleFiles(e.target.files);e.target.value=""}}/>
       <header><div><span className="overline">YOUR MONEY SNAPSHOT</span><h1>{tab==="analysis"?"Spending analysis":tab==="budget"?"Monthly budget":tab==="categorise"?"Categorise transactions":tab==="accounts"?"Accounts":tab==="statements"?"Statements":tab==="paytax"?"Pay & tax":"Transactions"}</h1></div><div className="header-tools"><div className="date-filters"><label><span>From</span><select value={dateFrom} onChange={e=>{setDateFrom(e.target.value);if(dateTo&&e.target.value>dateTo)setDateTo(e.target.value)}}><option value="">First month</option>{availableMonths.map(month=><option key={month} value={month}>{new Date(month+"-02").toLocaleDateString("en-AU",{month:"short",year:"numeric"})}</option>)}</select></label><label><span>To</span><select value={dateTo} onChange={e=>{setDateTo(e.target.value);if(dateFrom&&e.target.value<dateFrom)setDateFrom(e.target.value)}}><option value="">Latest month</option>{availableMonths.map(month=><option key={month} value={month}>{new Date(month+"-02").toLocaleDateString("en-AU",{month:"short",year:"numeric"})}</option>)}</select></label></div><div className="actions"><button className="import-button" disabled={loading} onClick={()=>input.current?.click()}><UploadCloud size={16}/>{loading?"Importing…":"Import statements"}</button><button onClick={exportPdf}><FileText size={16}/>PDF</button><button className="primary" onClick={exportExcel}><Download size={16}/>Export Excel</button></div></div></header>
@@ -604,14 +674,14 @@ function Accounts() {
   const [editing,setEditing]=useState("");
   const [draft,setDraft]=useState({});
   const [error,setError]=useState("");
-  const load=()=>fetch("/api/accounts").then(response=>response.json()).then(data=>setAccounts(data.accounts||[])).catch(()=>setError("Account details could not be loaded"));
+  const load=()=>apiFetch("/api/accounts").then(response=>response.json()).then(data=>setAccounts(data.accounts||[])).catch(()=>setError("Account details could not be loaded"));
   useEffect(load,[]);
   const alerts=accounts.filter(account=>account.status!=="current");
   const statusText=account=>account.status==="current"?"Up to date":account.status==="gap"?"Statement gap detected":account.status==="stale"?`Last statement ${account.daysSinceLatest} days ago`:"No statements found";
   const beginEdit=account=>{setEditing(account.id);setDraft({bank:account.bank,name:account.name,accountNumber:account.accountNumber,bsb:account.bsb});setError("")};
   async function saveAccount(event) {
     event.preventDefault();
-    const response=await fetch(`/api/accounts/${encodeURIComponent(editing)}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(draft)});
+    const response=await apiFetch(`/api/accounts/${encodeURIComponent(editing)}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(draft)});
     const data=await response.json();
     if (!response.ok) return setError(data.error||"Account could not be saved");
     setAccounts(data.accounts||[]);
@@ -629,11 +699,11 @@ function PayAndTax() {
   const [deduction,setDeduction]=useState({title:"",documentDate:today,amount:"",category:"Work expenses",notes:""});
   const [payFile,setPayFile]=useState(null);
   const [deductionFile,setDeductionFile]=useState(null);
-  const load=()=>fetch("/api/documents").then(response=>response.json()).then(data=>setDocuments(data.documents||[])).catch(()=>setError("Pay and tax records could not be loaded"));
+  const load=()=>apiFetch("/api/documents").then(response=>response.json()).then(data=>setDocuments(data.documents||[])).catch(()=>setError("Pay and tax records could not be loaded"));
   useEffect(load,[]);
   async function upload(type,meta,file) {
     setError("");
-    const response=await fetch(`/api/documents/${type}`,{method:"POST",headers:{"Content-Type":file?.type||"application/octet-stream","X-File-Name":encodeURIComponent(file?.name||""),"X-Document-Meta":encodeURIComponent(JSON.stringify(meta))},body:file?await file.arrayBuffer():new Uint8Array()});
+    const response=await apiFetch(`/api/documents/${type}`,{method:"POST",headers:{"Content-Type":file?.type||"application/octet-stream","X-File-Name":encodeURIComponent(file?.name||""),"X-Document-Meta":encodeURIComponent(JSON.stringify(meta))},body:file?await file.arrayBuffer():new Uint8Array()});
     const data=await response.json();
     if (!response.ok) throw new Error(data.error||"Record could not be saved");
     await load();
@@ -650,7 +720,7 @@ function PayAndTax() {
   }
   async function remove(document) {
     if (!window.confirm(`Delete “${document.title||document.filename}”?`)) return;
-    await fetch(`/api/documents/${document.id}`,{method:"DELETE"});
+    await apiFetch(`/api/documents/${document.id}`,{method:"DELETE"});
     if(viewing?.id===document.id)setViewing(null);
     await load();
   }
@@ -658,7 +728,7 @@ function PayAndTax() {
   const deductions=documents.filter(document=>document.type==="deduction");
   const financialYear=date=>{const value=new Date(date+"T00:00"),start=value.getMonth()>=6?value.getFullYear():value.getFullYear()-1;return `${start}–${String(start+1).slice(2)}`};
   const summaries=[...new Set(documents.map(document=>financialYear(document.documentDate)))].sort().reverse().map(year=>{const slips=payslips.filter(item=>financialYear(item.documentDate)===year),claims=deductions.filter(item=>financialYear(item.documentDate)===year);return {year,gross:slips.reduce((sum,item)=>sum+item.gross,0),net:slips.reduce((sum,item)=>sum+item.net,0),tax:slips.reduce((sum,item)=>sum+item.tax,0),deductions:claims.reduce((sum,item)=>sum+item.amount,0)}});
-  if (viewing) return <section className="panel statement-viewer"><div className="statement-viewer-head"><div><span>{viewing.type==="payslip"?"PAY SLIP":"DEDUCTION DOCUMENT"}</span><h3>{viewing.title||viewing.filename}</h3><small>{viewing.filename}</small></div><button onClick={()=>setViewing(null)}>Back to pay &amp; tax</button></div><iframe title={viewing.filename} src={`/api/documents/file/${viewing.id}`}/></section>;
+  if (viewing) return <section className="panel statement-viewer"><div className="statement-viewer-head"><div><span>{viewing.type==="payslip"?"PAY SLIP":"DEDUCTION DOCUMENT"}</span><h3>{viewing.title||viewing.filename}</h3><small>{viewing.filename}</small></div><button onClick={()=>setViewing(null)}>Back to pay &amp; tax</button></div><iframe title={viewing.filename} src={ledgerFileUrl(`/api/documents/file/${viewing.id}`)}/></section>;
   return <div className="pay-tax-page"><div className="record-tabs"><button className={section==="payslips"?"active":""} onClick={()=>setSection("payslips")}>Pay slips</button><button className={section==="tax"?"active":""} onClick={()=>setSection("tax")}>EOFY tax &amp; deductions</button></div>{error&&<div className="manager-error">{error}</div>}{section==="payslips"?<><section className="panel record-entry"><div><span>XERO PAY SLIPS</span><h2>Add a pay slip</h2><p>Store the original file and the figures needed for your EOFY summary.</p></div><form onSubmit={addPayslip}><label><span>Employer</span><input required value={pay.employer} onChange={event=>setPay({...pay,employer:event.target.value})}/></label><label><span>Pay date</span><input required type="date" value={pay.documentDate} onChange={event=>setPay({...pay,documentDate:event.target.value})}/></label><label><span>Gross pay</span><input type="number" step=".01" value={pay.gross} onChange={event=>setPay({...pay,gross:event.target.value})}/></label><label><span>Net pay</span><input type="number" step=".01" value={pay.net} onChange={event=>setPay({...pay,net:event.target.value})}/></label><label><span>Tax withheld</span><input type="number" step=".01" value={pay.tax} onChange={event=>setPay({...pay,tax:event.target.value})}/></label><label><span>Xero PDF or image</span><input required type="file" accept="application/pdf,image/*" onChange={event=>setPayFile(event.target.files?.[0])}/></label><button>Save pay slip</button></form></section><DocumentList documents={payslips} onView={setViewing} onDelete={remove}/></>:<><div className="tax-summary-grid">{summaries.length?summaries.map(summary=><article key={summary.year}><span>FY {summary.year}</span><dl><div><dt>Gross income</dt><dd>{fmt.format(summary.gross)}</dd></div><div><dt>Tax withheld</dt><dd>{fmt.format(summary.tax)}</dd></div><div><dt>Net pay</dt><dd>{fmt.format(summary.net)}</dd></div><div><dt>Deductions</dt><dd>{fmt.format(summary.deductions)}</dd></div></dl></article>):<article><span>EOFY SUMMARY</span><p>Add pay slips or deductions to begin.</p></article>}</div><section className="panel record-entry"><div><span>DEDUCTIBLE EXPENSE</span><h2>Add a deduction</h2><p>Keep the amount, reason and supporting receipt together.</p></div><form onSubmit={addDeduction}><label><span>Description</span><input required value={deduction.title} onChange={event=>setDeduction({...deduction,title:event.target.value})}/></label><label><span>Date</span><input required type="date" value={deduction.documentDate} onChange={event=>setDeduction({...deduction,documentDate:event.target.value})}/></label><label><span>Amount</span><input required type="number" step=".01" value={deduction.amount} onChange={event=>setDeduction({...deduction,amount:event.target.value})}/></label><label><span>Category</span><input value={deduction.category} onChange={event=>setDeduction({...deduction,category:event.target.value})}/></label><label className="wide-field"><span>Notes</span><input value={deduction.notes} onChange={event=>setDeduction({...deduction,notes:event.target.value})}/></label><label><span>Receipt (optional)</span><input type="file" accept="application/pdf,image/*" onChange={event=>setDeductionFile(event.target.files?.[0])}/></label><button>Save deduction</button></form></section><DocumentList documents={deductions} onView={setViewing} onDelete={remove}/></>}</div>;
 }
 function DocumentList({documents,onView,onDelete}) {
@@ -669,10 +739,10 @@ function Statements() {
   const [selected,setSelected]=useState("");
   const [loading,setLoading]=useState(true);
   const [error,setError]=useState("");
-  useEffect(()=>{fetch("/api/statements").then(response=>response.ok?response.json():Promise.reject(new Error("Statement library could not be loaded"))).then(data=>setStatements(data.statements||[])).catch(reason=>setError(reason.message)).finally(()=>setLoading(false))},[]);
+  useEffect(()=>{apiFetch("/api/statements").then(response=>response.ok?response.json():Promise.reject(new Error("Statement library could not be loaded"))).then(data=>setStatements(data.statements||[])).catch(reason=>setError(reason.message)).finally(()=>setLoading(false))},[]);
   if (loading) return <section className="panel statements-loading"><RefreshCw size={22}/><strong>Loading statement library…</strong></section>;
   if (error) return <section className="panel view-error"><FileText size={28}/><h3>Statements could not be loaded</h3><p>{error}</p><button onClick={()=>window.location.reload()}>Reload app</button></section>;
-  if (selected) return <section className="panel statement-viewer"><div className="statement-viewer-head"><div><span>ORIGINAL PDF</span><h3>{statementSourceLabel(selected)}</h3><small>{selected}</small></div><div><a href={`/api/statements/file/${encodeURIComponent(selected)}`} target="_blank" rel="noreferrer">Open separately</a><button onClick={()=>setSelected("")}>Back to statements</button></div></div><iframe title={selected} src={`/api/statements/file/${encodeURIComponent(selected)}`}/></section>;
+  if (selected) return <section className="panel statement-viewer"><div className="statement-viewer-head"><div><span>ORIGINAL PDF</span><h3>{statementSourceLabel(selected)}</h3><small>{selected}</small></div><div><a href={ledgerFileUrl(`/api/statements/file/${encodeURIComponent(selected)}`)} target="_blank" rel="noreferrer">Open separately</a><button onClick={()=>setSelected("")}>Back to statements</button></div></div><iframe title={selected} src={ledgerFileUrl(`/api/statements/file/${encodeURIComponent(selected)}`)}/></section>;
   return <section className="panel statements-page"><div className="panel-title"><div><span>LOCAL STATEMENT LIBRARY</span><h3>Your imported PDFs</h3><p>Click a statement to view the original PDF. Files stay on this Mac.</p></div></div>{statements.length?<div className="statement-grid">{statements.map(statement=><button key={statement.filename} onClick={()=>setSelected(statement.filename)}><FileText size={22}/><span><strong>{statementSourceLabel(statement.filename)}</strong><small>{statement.filename}</small></span><em>{statement.transactionCount} transaction{statement.transactionCount===1?"":"s"}</em><ChevronRight size={16}/></button>)}</div>:<div className="empty-statements"><FileText size={30}/><strong>No saved PDFs yet</strong><span>Import a PDF statement and it will appear here.</span></div>}</section>;
 }
 function EditableAmount({row,onChange}) {
@@ -688,23 +758,23 @@ function ReceiptModal({row,onClose,onCountChange}) {
   const [viewing,setViewing]=useState(null);
   const [error,setError]=useState("");
   const input=useRef();
-  const load=()=>fetch(`/api/receipts?transactionId=${row.id}`).then(response=>response.json()).then(data=>{setReceipts(data.receipts||[]);onCountChange((data.receipts||[]).length)}).catch(()=>setError("Receipts could not be loaded"));
+  const load=()=>apiFetch(`/api/receipts?transactionId=${row.id}`).then(response=>response.json()).then(data=>{setReceipts(data.receipts||[]);onCountChange((data.receipts||[]).length)}).catch(()=>setError("Receipts could not be loaded"));
   useEffect(load,[row.id]);
   async function attach(file) {
     if (!file) return;
     setError("");
-    const response=await fetch(`/api/receipts/${row.id}`,{method:"POST",headers:{"Content-Type":file.type||"application/octet-stream","X-File-Name":encodeURIComponent(file.name)},body:await file.arrayBuffer()});
+    const response=await apiFetch(`/api/receipts/${row.id}`,{method:"POST",headers:{"Content-Type":file.type||"application/octet-stream","X-File-Name":encodeURIComponent(file.name)},body:await file.arrayBuffer()});
     const data=await response.json();
     if (!response.ok) return setError(data.error||"Receipt could not be attached");
     await load();
   }
   async function remove(receipt) {
     if (!window.confirm(`Delete receipt “${receipt.filename}”?`)) return;
-    await fetch(`/api/receipts/${receipt.id}`,{method:"DELETE"});
+    await apiFetch(`/api/receipts/${receipt.id}`,{method:"DELETE"});
     if (viewing?.id===receipt.id)setViewing(null);
     await load();
   }
-  return <div className="modal-backdrop" onMouseDown={event=>event.target===event.currentTarget&&onClose()}><div className="receipt-modal" role="dialog" aria-modal="true" aria-label="Transaction receipts"><div className="modal-heading"><div><span>RECEIPTS</span><h2>{row.description}</h2><p>{new Date(row.date+"T00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short",year:"numeric"})} · {fmt.format(Math.abs(row.amount))}</p></div><button onClick={onClose}><X size={20}/></button></div>{error&&<div className="manager-error">{error}</div>}{viewing?<><div className="receipt-viewer-head"><button onClick={()=>setViewing(null)}>Back to receipts</button><strong>{viewing.filename}</strong></div><iframe title={viewing.filename} src={`/api/receipts/file/${viewing.id}`}/></>:<><input ref={input} hidden type="file" accept="application/pdf,image/*" onChange={event=>attach(event.target.files?.[0])}/><div className="receipt-upload-actions"><button className="receipt-upload" onClick={()=>input.current?.click()}><Paperclip size={17}/><span><strong>Choose file or photo</strong><small>Attach a PDF or image from your Mac</small></span></button><button className="open-photos-button" onClick={()=>fetch("/api/system/photos",{method:"POST"})}>Open Photos app</button></div><div className="receipt-list">{receipts.map(receipt=><div key={receipt.id}><button onClick={()=>setViewing(receipt)}><FileText size={18}/><span><strong>{receipt.filename}</strong><small>{new Date(receipt.createdAt+"Z").toLocaleDateString("en-AU")}</small></span></button><button onClick={()=>remove(receipt)} aria-label={`Delete ${receipt.filename}`}><Trash2 size={14}/></button></div>)}{!receipts.length&&<div className="empty-subcategories"><strong>No receipts attached</strong><span>Add a PDF or photo above.</span></div>}</div></>}</div></div>;
+  return <div className="modal-backdrop" onMouseDown={event=>event.target===event.currentTarget&&onClose()}><div className="receipt-modal" role="dialog" aria-modal="true" aria-label="Transaction receipts"><div className="modal-heading"><div><span>RECEIPTS</span><h2>{row.description}</h2><p>{new Date(row.date+"T00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short",year:"numeric"})} · {fmt.format(Math.abs(row.amount))}</p></div><button onClick={onClose}><X size={20}/></button></div>{error&&<div className="manager-error">{error}</div>}{viewing?<><div className="receipt-viewer-head"><button onClick={()=>setViewing(null)}>Back to receipts</button><strong>{viewing.filename}</strong></div><iframe title={viewing.filename} src={ledgerFileUrl(`/api/receipts/file/${viewing.id}`)}/></>:<><input ref={input} hidden type="file" accept="application/pdf,image/*" onChange={event=>attach(event.target.files?.[0])}/><div className="receipt-upload-actions"><button className="receipt-upload" onClick={()=>input.current?.click()}><Paperclip size={17}/><span><strong>Choose file or photo</strong><small>Attach a PDF or image from your Mac</small></span></button><button className="open-photos-button" onClick={()=>apiFetch("/api/system/photos",{method:"POST"})}>Open Photos app</button></div><div className="receipt-list">{receipts.map(receipt=><div key={receipt.id}><button onClick={()=>setViewing(receipt)}><FileText size={18}/><span><strong>{receipt.filename}</strong><small>{new Date(receipt.createdAt+"Z").toLocaleDateString("en-AU")}</small></span></button><button onClick={()=>remove(receipt)} aria-label={`Delete ${receipt.filename}`}><Trash2 size={14}/></button></div>)}{!receipts.length&&<div className="empty-subcategories"><strong>No receipts attached</strong><span>Add a PDF or photo above.</span></div>}</div></>}</div></div>;
 }
 function Categorise({rows,categories:categoryRecords,onAddCategory,onRenameCategory,onDeleteCategory,onCategoryChange,onSubcategoryChange,onBulkCategoryChange,onSubscriptionChange,onExcludedChange,onAmountChange,onReceiptCountChange,onDeleteTransaction,onDeleteTransactions}) {
   const [search,setSearch] = useState("");

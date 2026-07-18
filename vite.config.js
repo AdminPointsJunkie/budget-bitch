@@ -4,7 +4,8 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { basename, join } from "node:path";
 import { homedir } from "node:os";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
 const extractor = fileURLToPath(new URL("./scripts/extract_pdf.py", import.meta.url));
@@ -106,12 +107,6 @@ database.exec(`CREATE TABLE IF NOT EXISTS documents (
 const rememberStatement=database.prepare("INSERT OR IGNORE INTO statements (filename) VALUES (?)");
 const pdfSources=database.prepare("SELECT DISTINCT source FROM transactions WHERE LOWER(source) LIKE '%.pdf'").all();
 const knownStatementFiles=new Set(pdfSources.map(({source})=>basename(source)));
-const downloadsDirectory=join(homedir(),"Downloads");
-if (existsSync(downloadsDirectory)) {
-  for (const filename of readdirSync(downloadsDirectory)) {
-    if (/^(?:\d{2}[_-].*(?:Statement|_\d{4})|Mortgage_Simplifier|Orange_Everyday|eStatement).*\.pdf$/i.test(filename)) knownStatementFiles.add(filename);
-  }
-}
 for (const filename of knownStatementFiles) {
   const storedPath=join(statementsDirectory,filename);
   const downloadPath=join(homedir(),"Downloads",filename);
@@ -191,6 +186,116 @@ if (!database.prepare("SELECT value FROM app_meta WHERE key = 'amex_year_rollove
   }
 }
 
+const ledgerRegistryPath=join(dataDirectory,"ledgers.json");
+let ledgers=existsSync(ledgerRegistryPath)
+  ? JSON.parse(readFileSync(ledgerRegistryPath,"utf8"))
+  : [{id:"johns-ledger",name:"John’s Ledger",createdAt:new Date().toISOString(),root:true}];
+if (!ledgers.some(ledger=>ledger.id==="johns-ledger")) ledgers.unshift({id:"johns-ledger",name:"John’s Ledger",createdAt:new Date().toISOString(),root:true});
+const saveLedgers=()=>writeFileSync(ledgerRegistryPath,JSON.stringify(ledgers,null,2));
+saveLedgers();
+const ledgerDatabases=new Map([["johns-ledger",database]]);
+function ledgerRecord(id) {
+  return ledgers.find(ledger=>ledger.id===id)||ledgers[0];
+}
+function ledgerPaths(id) {
+  const ledger=ledgerRecord(id);
+  const root=ledger.root?dataDirectory:join(dataDirectory,"ledgers",ledger.id);
+  const paths={root,statementsDirectory:join(root,"statements"),receiptsDirectory:join(root,"receipts"),documentsDirectory:join(root,"documents")};
+  Object.values(paths).forEach(path=>mkdirSync(path,{recursive:true}));
+  return paths;
+}
+function initializeBlankLedger(id) {
+  const paths=ledgerPaths(id);
+  const ledgerDatabase=new DatabaseSync(join(paths.root,"ledgerly.db"));
+  ledgerDatabase.exec(`
+    CREATE TABLE IF NOT EXISTS transactions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      tx_date TEXT NOT NULL,
+      description TEXT NOT NULL,
+      category TEXT NOT NULL,
+      subcategory TEXT NOT NULL DEFAULT '',
+      amount REAL NOT NULL,
+      source TEXT NOT NULL DEFAULT '',
+      fingerprint TEXT NOT NULL UNIQUE,
+      is_subscription INTEGER NOT NULL DEFAULT 0,
+      is_excluded INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS categories (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      parent_id INTEGER REFERENCES categories(id) ON DELETE CASCADE,
+      UNIQUE(name, parent_id)
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS categories_unique_name_parent ON categories(name, COALESCE(parent_id, 0));
+    CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS statements (filename TEXT PRIMARY KEY, imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS transaction_attachments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+      filename TEXT NOT NULL,
+      stored_name TEXT NOT NULL DEFAULT '',
+      mime_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS documents (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      type TEXT NOT NULL,
+      filename TEXT NOT NULL DEFAULT '',
+      stored_name TEXT NOT NULL DEFAULT '',
+      mime_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+      title TEXT NOT NULL DEFAULT '',
+      document_date TEXT NOT NULL,
+      employer TEXT NOT NULL DEFAULT '',
+      gross REAL NOT NULL DEFAULT 0,
+      net REAL NOT NULL DEFAULT 0,
+      tax REAL NOT NULL DEFAULT 0,
+      amount REAL NOT NULL DEFAULT 0,
+      category TEXT NOT NULL DEFAULT '',
+      notes TEXT NOT NULL DEFAULT '',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS accounts (
+      id TEXT PRIMARY KEY,
+      bank TEXT NOT NULL,
+      name TEXT NOT NULL,
+      account_number TEXT NOT NULL DEFAULT '',
+      bsb TEXT NOT NULL DEFAULT '',
+      source_pattern TEXT NOT NULL,
+      cadence_months INTEGER NOT NULL DEFAULT 1
+    );
+  `);
+  const insertCategory=ledgerDatabase.prepare("INSERT OR IGNORE INTO categories (name, parent_id) VALUES (?, NULL)");
+  [...defaultCategories,"Interest"].forEach(name=>insertCategory.run(name));
+  const interestId=ledgerDatabase.prepare("SELECT id FROM categories WHERE name = 'Interest' AND parent_id IS NULL").get().id;
+  ledgerDatabase.prepare("INSERT OR IGNORE INTO categories (name, parent_id) VALUES ('Mortgage interest', ?)").run(interestId);
+  ledgerDatabase.prepare("INSERT OR IGNORE INTO categories (name, parent_id) VALUES ('Credit card interest', ?)").run(interestId);
+  ledgerDatabases.set(id,ledgerDatabase);
+  return ledgerDatabase;
+}
+function databaseForLedger(id) {
+  const ledger=ledgerRecord(id);
+  if (ledgerDatabases.has(ledger.id)) return ledgerDatabases.get(ledger.id);
+  const path=join(ledgerPaths(ledger.id).root,"ledgerly.db");
+  if (!existsSync(path)) return initializeBlankLedger(ledger.id);
+  const ledgerDatabase=new DatabaseSync(path);
+  ledgerDatabases.set(ledger.id,ledgerDatabase);
+  return ledgerDatabase;
+}
+function ledgerIdForRequest(req) {
+  const queryLedger=new URL(req.url||"/","http://local").searchParams.get("ledgerId");
+  const requested=String(req.headers["x-ledger-id"]||queryLedger||"johns-ledger");
+  return ledgers.some(ledger=>ledger.id===requested)?requested:"johns-ledger";
+}
+function seedDetectedAccounts(ledgerDatabase,filenames) {
+  const names=[...filenames];
+  const insert=ledgerDatabase.prepare("INSERT OR IGNORE INTO accounts (id, bank, name, account_number, bsb, source_pattern, cadence_months) VALUES (?, ?, ?, ?, ?, ?, ?)");
+  if (names.some(name=>/^08_/i.test(name))) insert.run("amex-explorer","American Express","Explorer Credit Card","Ending 93007","","^08_",1);
+  if (names.some(name=>/_Statement\.pdf$/i.test(name))) insert.run("hsbc-everyday","HSBC","Everyday Global","136991090","342-201","_Statement.pdf$",1);
+  if (names.some(name=>/^Orange_Everyday_/i.test(name))) insert.run("ing-orange","ING","Orange Everyday","311458516","923-100","^Orange_Everyday_",3);
+  if (names.some(name=>/^Mortgage_Simplifier_/i.test(name))) insert.run("ing-mortgage","ING","Mortgage Simplifier","29775089","923-100","^Mortgage_Simplifier_",6);
+}
+
 function interestClassification(description,amount,source) {
   if (String(description).trim().toUpperCase()!=="INTEREST CHARGE") return null;
   const mortgage=/mortgage/i.test(String(source)) || Math.abs(Number(amount))>=1000;
@@ -257,9 +362,48 @@ function localDataServices() {
   return {
     name: "local-data-services",
     configureServer(server) {
+      server.middlewares.use("/api/ledgers",async(req,res,next)=>{
+        try {
+          if (req.method==="GET"&&req.url==="/") {
+            const summaries=ledgers.map(ledger=>{
+              const ledgerDatabase=databaseForLedger(ledger.id);
+              return {...ledger,transactionCount:ledgerDatabase.prepare("SELECT COUNT(*) AS count FROM transactions").get().count,statementCount:ledgerDatabase.prepare("SELECT COUNT(*) AS count FROM statements").get().count};
+            });
+            return sendJson(res,{ledgers:summaries});
+          }
+          if (req.method==="POST"&&req.url==="/") {
+            const {name}=JSON.parse((await readBody(req,1024*20)).toString());
+            const ledgerName=String(name||"").trim();
+            if (!ledgerName) return sendJson(res,{error:"Ledger name is required"},400);
+            const ledger={id:`ledger-${randomUUID()}`,name:ledgerName,createdAt:new Date().toISOString(),root:false};
+            ledgers.push(ledger);
+            saveLedgers();
+            initializeBlankLedger(ledger.id);
+            return sendJson(res,{ledger},201);
+          }
+          const match=req.url.match(/^\/([^/]+)$/);
+          if (req.method==="PATCH"&&match) {
+            const id=decodeURIComponent(match[1]);
+            const ledger=ledgers.find(item=>item.id===id);
+            if (!ledger) return sendJson(res,{error:"Ledger not found"},404);
+            const {name}=JSON.parse((await readBody(req,1024*20)).toString());
+            const ledgerName=String(name||"").trim();
+            if (!ledgerName) return sendJson(res,{error:"Ledger name is required"},400);
+            ledger.name=ledgerName;
+            saveLedgers();
+            return sendJson(res,{ledger,ledgers});
+          }
+          next();
+        } catch(error) {
+          sendJson(res,{error:error.message},400);
+        }
+      });
       server.middlewares.use("/api/parse-pdf", async (req, res, next) => {
         if (req.method !== "POST") return next();
         try {
+          const ledgerId=ledgerIdForRequest(req);
+          const database=databaseForLedger(ledgerId);
+          const {statementsDirectory}=ledgerPaths(ledgerId);
           const body = await readBody(req);
           const child = spawn("python3", [extractor], { stdio:["pipe","pipe","pipe"] });
           const output = [], errors = [];
@@ -272,7 +416,8 @@ function localDataServices() {
             } else {
               const filename=basename(decodeURIComponent(String(req.headers["x-statement-filename"]||"statement.pdf")));
               writeFileSync(join(statementsDirectory,filename),body);
-              rememberStatement.run(filename);
+              database.prepare("INSERT OR IGNORE INTO statements (filename) VALUES (?)").run(filename);
+              seedDetectedAccounts(database,[filename]);
               res.end(Buffer.concat(output));
             }
           });
@@ -283,13 +428,16 @@ function localDataServices() {
       });
       server.middlewares.use("/api/statements", async (req,res,next)=>{
         try {
+          const ledgerId=ledgerIdForRequest(req);
+          const database=databaseForLedger(ledgerId);
+          const {statementsDirectory}=ledgerPaths(ledgerId);
           if (req.method==="GET"&&req.url==="/") {
             const statements=database.prepare(`SELECT statements.filename, statements.imported_at AS importedAt,
               (SELECT COUNT(*) FROM transactions WHERE transactions.source = statements.filename) AS transactionCount
               FROM statements ORDER BY statements.filename`).all();
             return sendJson(res,{statements});
           }
-          const match=req.url.match(/^\/file\/(.+)$/);
+          const match=new URL(req.url,"http://local").pathname.match(/^\/file\/(.+)$/);
           if (req.method==="GET"&&match) {
             const filename=basename(decodeURIComponent(match[1]));
             const path=join(statementsDirectory,filename);
@@ -306,6 +454,7 @@ function localDataServices() {
       });
       server.middlewares.use("/api/accounts", async (req,res,next)=>{
         try {
+          const database=databaseForLedger(ledgerIdForRequest(req));
           const statementRows=database.prepare("SELECT filename FROM statements ORDER BY filename").all();
           if (req.method==="GET"&&req.url==="/") {
             const accounts=database.prepare("SELECT id, bank, name, account_number AS accountNumber, bsb, source_pattern AS sourcePattern, cadence_months AS cadenceMonths FROM accounts ORDER BY bank, name").all();
@@ -330,12 +479,15 @@ function localDataServices() {
       });
       server.middlewares.use("/api/receipts", async (req,res,next)=>{
         try {
+          const ledgerId=ledgerIdForRequest(req);
+          const database=databaseForLedger(ledgerId);
+          const {receiptsDirectory}=ledgerPaths(ledgerId);
           if (req.method==="GET"&&req.url.startsWith("/?")) {
             const transactionId=Number(new URL(req.url,"http://local").searchParams.get("transactionId"));
             const receipts=database.prepare("SELECT id, transaction_id AS transactionId, filename, mime_type AS mimeType, created_at AS createdAt FROM transaction_attachments WHERE transaction_id = ? ORDER BY id DESC").all(transactionId);
             return sendJson(res,{receipts});
           }
-          let match=req.url.match(/^\/file\/(\d+)$/);
+          let match=new URL(req.url,"http://local").pathname.match(/^\/file\/(\d+)$/);
           if (req.method==="GET"&&match) {
             const receipt=database.prepare("SELECT filename, stored_name AS storedName, mime_type AS mimeType FROM transaction_attachments WHERE id = ?").get(Number(match[1]));
             if (!receipt||!existsSync(join(receiptsDirectory,receipt.storedName))) return sendJson(res,{error:"Receipt not found"},404);
@@ -374,6 +526,9 @@ function localDataServices() {
       });
       server.middlewares.use("/api/documents", async (req,res,next)=>{
         try {
+          const ledgerId=ledgerIdForRequest(req);
+          const database=databaseForLedger(ledgerId);
+          const {documentsDirectory}=ledgerPaths(ledgerId);
           if (req.method==="GET"&&(req.url==="/"||req.url.startsWith("/?"))) {
             const type=new URL(req.url,"http://local").searchParams.get("type");
             const documents=type
@@ -381,7 +536,7 @@ function localDataServices() {
               : database.prepare("SELECT id, type, filename, mime_type AS mimeType, title, document_date AS documentDate, employer, gross, net, tax, amount, category, notes, created_at AS createdAt FROM documents ORDER BY document_date DESC, id DESC").all();
             return sendJson(res,{documents});
           }
-          let match=req.url.match(/^\/file\/(\d+)$/);
+          let match=new URL(req.url,"http://local").pathname.match(/^\/file\/(\d+)$/);
           if (req.method==="GET"&&match) {
             const document=database.prepare("SELECT filename, stored_name AS storedName, mime_type AS mimeType FROM documents WHERE id = ?").get(Number(match[1]));
             if (!document?.storedName||!existsSync(join(documentsDirectory,document.storedName))) return sendJson(res,{error:"Document file not found"},404);
@@ -431,12 +586,14 @@ function localDataServices() {
       });
       server.middlewares.use("/api/transactions", async (req, res, next) => {
         try {
+          const database=databaseForLedger(ledgerIdForRequest(req));
           if (req.method === "GET" && req.url === "/") {
             const rows = database.prepare("SELECT id, tx_date AS date, description, category, subcategory, amount, source, is_subscription AS isSubscription, is_excluded AS isExcluded, (SELECT COUNT(*) FROM transaction_attachments WHERE transaction_id = transactions.id) AS receiptCount FROM transactions ORDER BY tx_date, id").all();
             return sendJson(res, {transactions:rows});
           }
           if (req.method === "POST" && req.url === "/") {
             const { transactions = [] } = JSON.parse((await readBody(req)).toString());
+            seedDetectedAccounts(database,transactions.map(transaction=>transaction.source||""));
             const insert = database.prepare("INSERT OR IGNORE INTO transactions (tx_date, description, category, subcategory, amount, source, fingerprint, is_subscription, is_excluded) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
             database.exec("BEGIN");
             try {
@@ -511,6 +668,7 @@ function localDataServices() {
       });
       server.middlewares.use("/api/categories", async (req, res, next) => {
         try {
+          const database=databaseForLedger(ledgerIdForRequest(req));
           if (req.method === "GET" && req.url === "/") {
             const rows=database.prepare("SELECT id, name, parent_id AS parentId FROM categories ORDER BY parent_id IS NOT NULL, name").all();
             return sendJson(res,{categories:rows});
