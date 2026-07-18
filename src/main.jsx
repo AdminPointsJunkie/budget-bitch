@@ -6,8 +6,8 @@ import { Doughnut, Bar } from "react-chartjs-2";
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import {
-  ArrowRight, BarChart3, Check, ChevronRight, Download, EyeOff, FileSpreadsheet,
-  FileText, Landmark, LockKeyhole, PieChart, RefreshCw, ShieldCheck,
+  ArrowRight, BarChart3, Bell, Check, ChevronRight, Download, EyeOff, FileSpreadsheet,
+  FileText, Landmark, LockKeyhole, Paperclip, Pencil, PieChart, RefreshCw, ShieldCheck,
   Sparkles, Star, Target, Trash2, TrendingDown, UploadCloud, WalletCards, X
 } from "lucide-react";
 import "./styles.css";
@@ -415,6 +415,14 @@ function App() {
     if (!response.ok) throw new Error(data.error||"Could not add category");
     setCustomCategories(data.categories);
   }
+  async function renameCategory(id,name) {
+    const response=await fetch(`/api/categories/${id}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify({name})});
+    const data=await response.json();
+    if (!response.ok) throw new Error(data.error||"Category could not be renamed");
+    setCustomCategories(data.categories);
+    const stored=await fetch("/api/transactions").then(result=>result.json());
+    setTransactions(stored.transactions||[]);
+  }
   async function deleteCategory(id) {
     const response=await fetch(`/api/categories/${id}`,{method:"DELETE"});
     const data=await response.json();
@@ -472,7 +480,10 @@ function App() {
       throw new Error(data.error||"Amount could not be saved");
     }
   }
-  if (view === "dashboard") return <Dashboard {...{transactions:filteredTransactions,totalTransactions:transactions.length,updateCategory,updateSubcategory,updateBulkCategory,updateSubscription,updateExcluded,updateAmount,deleteTransaction,deleteTransactions,customCategories,addCategory,deleteCategory,analysis,tab,setTab,fileNames,exportExcel,exportPdf,availableMonths,dateFrom,setDateFrom,dateTo,setDateTo,input,handleFiles,loading,error,onReset:()=>{setView("landing");setTransactions([]);setDateFrom("");setDateTo("")}}}/>;
+  function updateReceiptCount(row,count) {
+    setTransactions(current=>current.map(transaction=>sameTransaction(transaction,row)?{...transaction,receiptCount:count}:transaction));
+  }
+  if (view === "dashboard") return <Dashboard {...{transactions:filteredTransactions,totalTransactions:transactions.length,updateCategory,updateSubcategory,updateBulkCategory,updateSubscription,updateExcluded,updateAmount,updateReceiptCount,deleteTransaction,deleteTransactions,customCategories,addCategory,renameCategory,deleteCategory,analysis,tab,setTab,fileNames,exportExcel,exportPdf,availableMonths,dateFrom,setDateFrom,dateTo,setDateTo,input,handleFiles,loading,error,onReset:()=>{setView("landing");setTransactions([]);setDateFrom("");setDateTo("")}}}/>;
   return <Landing {...{input,handleFiles,loading,error,dragging,setDragging,onSample:()=>{setTransactions(sample);setFileNames(["Sample statement"]);setView("dashboard")}}}/>;
 }
 
@@ -518,7 +529,7 @@ function Landing({input,handleFiles,loading,error,dragging,setDragging,onSample}
 }
 function Step({n,icon,title,text}) { return <article className="step"><span className="step-number">{n}</span><div className="step-icon">{icon}</div><h3>{title}</h3><p>{text}</p></article> }
 
-function Dashboard({transactions,totalTransactions,updateCategory,updateSubcategory,updateBulkCategory,updateSubscription,updateExcluded,updateAmount,deleteTransaction,deleteTransactions,customCategories,addCategory,deleteCategory,analysis,tab,setTab,fileNames,exportExcel,exportPdf,availableMonths,dateFrom,setDateFrom,dateTo,setDateTo,input,handleFiles,loading,error,onReset}) {
+function Dashboard({transactions,totalTransactions,updateCategory,updateSubcategory,updateBulkCategory,updateSubscription,updateExcluded,updateAmount,updateReceiptCount,deleteTransaction,deleteTransactions,customCategories,addCategory,renameCategory,deleteCategory,analysis,tab,setTab,fileNames,exportExcel,exportPdf,availableMonths,dateFrom,setDateFrom,dateTo,setDateTo,input,handleFiles,loading,error,onReset}) {
   const cats = Object.entries(analysis.byCategory).sort((a,b)=>b[1]-a[1]);
   const donut = {labels:cats.map(x=>x[0]),datasets:[{data:cats.map(x=>x[1]),backgroundColor:COLORS,borderWidth:0,hoverOffset:6}]};
   const bars = {labels:analysis.monthly.map(x=>new Date(x.month+"-02").toLocaleDateString("en-AU",{month:"short"})),datasets:[{label:"Income",data:analysis.monthly.map(x=>x.income),backgroundColor:"#B9E9DE",borderRadius:7},{label:"Spending",data:analysis.monthly.map(x=>x.expense),backgroundColor:"#6574F7",borderRadius:7}]};
@@ -526,10 +537,10 @@ function Dashboard({transactions,totalTransactions,updateCategory,updateSubcateg
   const barRevision=analysis.monthly.map(month=>`${month.month}:${month.income}:${month.expense}`).join("|");
   const monthCount = Math.max(analysis.months.length,1);
   return <div className="app-shell">
-    <aside><Brand/><div className="side-files"><span>ANALYSIS</span><button className={tab==="analysis"?"active":""} onClick={()=>setTab("analysis")}><PieChart size={18}/>Spending analysis</button><button className={tab==="budget"?"active":""} onClick={()=>setTab("budget")}><WalletCards size={18}/>Monthly budget</button><button className={tab==="transactions"?"active":""} onClick={()=>setTab("transactions")}><FileSpreadsheet size={18}/>Transactions</button><button className={tab==="categorise"?"active":""} onClick={()=>setTab("categorise")}><Target size={18}/>Categorise</button><button className={tab==="statements"?"active":""} onClick={()=>setTab("statements")}><FileText size={18}/>Statements</button></div><div className="file-box"><Landmark size={18}/><div><strong>{fileNames.length} source{fileNames.length!==1?"s":""}</strong><span>{transactions.length}{transactions.length!==totalTransactions?` of ${totalTransactions}`:""} transactions</span></div></div><button className="reset" onClick={onReset}><RefreshCw size={16}/>New analysis</button></aside>
+    <aside><Brand/><div className="side-files"><span>ANALYSIS</span><button className={tab==="analysis"?"active":""} onClick={()=>setTab("analysis")}><PieChart size={18}/>Spending analysis</button><button className={tab==="budget"?"active":""} onClick={()=>setTab("budget")}><WalletCards size={18}/>Monthly budget</button><button className={tab==="transactions"?"active":""} onClick={()=>setTab("transactions")}><FileSpreadsheet size={18}/>Transactions</button><button className={tab==="categorise"?"active":""} onClick={()=>setTab("categorise")}><Target size={18}/>Categorise</button><button className={tab==="accounts"?"active":""} onClick={()=>setTab("accounts")}><Landmark size={18}/>Accounts</button><button className={tab==="statements"?"active":""} onClick={()=>setTab("statements")}><FileText size={18}/>Statements</button><button className={tab==="paytax"?"active":""} onClick={()=>setTab("paytax")}><FileSpreadsheet size={18}/>Pay &amp; tax</button></div><div className="file-box"><Landmark size={18}/><div><strong>{fileNames.length} source{fileNames.length!==1?"s":""}</strong><span>{transactions.length}{transactions.length!==totalTransactions?` of ${totalTransactions}`:""} transactions</span></div></div><button className="reset" onClick={onReset}><RefreshCw size={16}/>New analysis</button></aside>
     <div className="dash-main">
       <input ref={input} type="file" hidden multiple accept=".csv,.xlsx,.ofx,.pdf" onChange={e=>{handleFiles(e.target.files);e.target.value=""}}/>
-      <header><div><span className="overline">YOUR MONEY SNAPSHOT</span><h1>{tab==="analysis"?"Spending analysis":tab==="budget"?"Monthly budget":tab==="categorise"?"Categorise transactions":tab==="statements"?"Statements":"Transactions"}</h1></div><div className="header-tools"><div className="date-filters"><label><span>From</span><select value={dateFrom} onChange={e=>{setDateFrom(e.target.value);if(dateTo&&e.target.value>dateTo)setDateTo(e.target.value)}}><option value="">First month</option>{availableMonths.map(month=><option key={month} value={month}>{new Date(month+"-02").toLocaleDateString("en-AU",{month:"short",year:"numeric"})}</option>)}</select></label><label><span>To</span><select value={dateTo} onChange={e=>{setDateTo(e.target.value);if(dateFrom&&e.target.value<dateFrom)setDateFrom(e.target.value)}}><option value="">Latest month</option>{availableMonths.map(month=><option key={month} value={month}>{new Date(month+"-02").toLocaleDateString("en-AU",{month:"short",year:"numeric"})}</option>)}</select></label></div><div className="actions"><button className="import-button" disabled={loading} onClick={()=>input.current?.click()}><UploadCloud size={16}/>{loading?"Importing…":"Import statements"}</button><button onClick={exportPdf}><FileText size={16}/>PDF</button><button className="primary" onClick={exportExcel}><Download size={16}/>Export Excel</button></div></div></header>
+      <header><div><span className="overline">YOUR MONEY SNAPSHOT</span><h1>{tab==="analysis"?"Spending analysis":tab==="budget"?"Monthly budget":tab==="categorise"?"Categorise transactions":tab==="accounts"?"Accounts":tab==="statements"?"Statements":tab==="paytax"?"Pay & tax":"Transactions"}</h1></div><div className="header-tools"><div className="date-filters"><label><span>From</span><select value={dateFrom} onChange={e=>{setDateFrom(e.target.value);if(dateTo&&e.target.value>dateTo)setDateTo(e.target.value)}}><option value="">First month</option>{availableMonths.map(month=><option key={month} value={month}>{new Date(month+"-02").toLocaleDateString("en-AU",{month:"short",year:"numeric"})}</option>)}</select></label><label><span>To</span><select value={dateTo} onChange={e=>{setDateTo(e.target.value);if(dateFrom&&e.target.value<dateFrom)setDateFrom(e.target.value)}}><option value="">Latest month</option>{availableMonths.map(month=><option key={month} value={month}>{new Date(month+"-02").toLocaleDateString("en-AU",{month:"short",year:"numeric"})}</option>)}</select></label></div><div className="actions"><button className="import-button" disabled={loading} onClick={()=>input.current?.click()}><UploadCloud size={16}/>{loading?"Importing…":"Import statements"}</button><button onClick={exportPdf}><FileText size={16}/>PDF</button><button className="primary" onClick={exportExcel}><Download size={16}/>Export Excel</button></div></div></header>
       {error&&<div className="error dashboard-error"><X size={15}/>{error}</div>}
       {tab==="analysis" && <><div className="metric-grid"><Metric label="Average monthly spend" value={fmt.format(analysis.average)} note={`${analysis.months.length} month view`} icon={<TrendingDown/>}/><Metric label="Average monthly income" value={fmt.format(analysis.income/monthCount)} note={`${fmt.format(analysis.income-analysis.expenses)} net total`} icon={<WalletCards/>}/><Metric label="Transactions" value={transactions.length} note={`${cats.length} spending categories`} icon={<FileSpreadsheet/>}/></div>
       <div className="chart-grid"><section className="panel"><div className="panel-title"><div><span>SPENDING MIX</span><h3>Where your money goes</h3></div></div><div className="donut-wrap"><Doughnut key={donutRevision} redraw data={donut} options={{cutout:"68%",plugins:{legend:{display:false}}}}/><div className="donut-label"><strong>{fmt.format(analysis.expenses)}</strong><span>total spent</span></div></div><div className="legend">{cats.slice(0,6).map(([c,v],i)=><div key={c}><i style={{background:COLORS[i%COLORS.length]}}/><span>{c}</span><strong>{Math.round(v/analysis.expenses*100)}%</strong></div>)}</div></section>
@@ -537,8 +548,10 @@ function Dashboard({transactions,totalTransactions,updateCategory,updateSubcateg
       <section className="panel table-panel"><div className="panel-title"><div><span>CATEGORY &amp; SUBCATEGORY DETAIL</span><h3>Your spending, ranked</h3></div></div><CategoryTable cats={cats} subcategories={analysis.bySubcategory} months={monthCount} total={analysis.expenses} transactions={transactions}/></section></>}
       {tab==="budget" && <Budget cats={cats} months={monthCount} income={analysis.income/monthCount}/>}
       {tab==="transactions" && <Transactions rows={transactions} onCategoryChange={updateCategory}/>}
-      {tab==="categorise" && <Categorise rows={transactions} categories={customCategories} onAddCategory={addCategory} onDeleteCategory={deleteCategory} onCategoryChange={updateCategory} onSubcategoryChange={updateSubcategory} onBulkCategoryChange={updateBulkCategory} onSubscriptionChange={updateSubscription} onExcludedChange={updateExcluded} onAmountChange={updateAmount} onDeleteTransaction={deleteTransaction} onDeleteTransactions={deleteTransactions}/>}
+      {tab==="categorise" && <Categorise rows={transactions} categories={customCategories} onAddCategory={addCategory} onRenameCategory={renameCategory} onDeleteCategory={deleteCategory} onCategoryChange={updateCategory} onSubcategoryChange={updateSubcategory} onBulkCategoryChange={updateBulkCategory} onSubscriptionChange={updateSubscription} onExcludedChange={updateExcluded} onAmountChange={updateAmount} onReceiptCountChange={updateReceiptCount} onDeleteTransaction={deleteTransaction} onDeleteTransactions={deleteTransactions}/>}
+      {tab==="accounts" && <Accounts/>}
       {tab==="statements" && <Statements/>}
+      {tab==="paytax" && <PayAndTax/>}
     </div>
   </div>;
 }
@@ -577,6 +590,71 @@ function Transactions({rows,onCategoryChange}) {
   const ordered=rows.slice().reverse(),paged=ordered.slice(page*PAGE_SIZE,(page+1)*PAGE_SIZE);
   return <section className="panel transactions"><p className="helper">Review the detected categories. Changes update your analysis instantly.</p><div className="table-row tx-head"><span>Date</span><span>Description</span><span>Category</span><span>Amount</span></div>{paged.map(r=>{const subscription=r.isSubscription||recurring.has(subscriptionKey(r.description));return <div className={`table-row tx-row ${subscription?"subscription-row":""}`} key={r.id||`${r.date}-${r.description}`}><span>{new Date(r.date+"T00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short",year:"numeric"})}</span><div className="transaction-description"><strong>{r.description}{subscription&&<small className="subscription-pill"><Star size={10}/>Subscription</small>}</strong><small className="source-label" title={r.source}>{statementSourceLabel(r.source)}</small></div><select value={r.category} onChange={e=>onCategoryChange(r,e.target.value)}>{[...CATEGORY_RULES.map(x=>x[0]),"Other"].filter((v,i,a)=>a.indexOf(v)===i).map(c=><option key={c}>{c}</option>)}</select><span className={r.amount>0?"positive":""}>{r.amount>0?"+":""}{fmt.format(r.amount)}</span></div>})}<Pager page={page} setPage={setPage} total={rows.length}/></section>
 }
+function Accounts() {
+  const [accounts,setAccounts]=useState([]);
+  const [editing,setEditing]=useState("");
+  const [draft,setDraft]=useState({});
+  const [error,setError]=useState("");
+  const load=()=>fetch("/api/accounts").then(response=>response.json()).then(data=>setAccounts(data.accounts||[])).catch(()=>setError("Account details could not be loaded"));
+  useEffect(load,[]);
+  const alerts=accounts.filter(account=>account.status!=="current");
+  const statusText=account=>account.status==="current"?"Up to date":account.status==="gap"?"Statement gap detected":account.status==="stale"?`Last statement ${account.daysSinceLatest} days ago`:"No statements found";
+  const beginEdit=account=>{setEditing(account.id);setDraft({bank:account.bank,name:account.name,accountNumber:account.accountNumber,bsb:account.bsb});setError("")};
+  async function saveAccount(event) {
+    event.preventDefault();
+    const response=await fetch(`/api/accounts/${encodeURIComponent(editing)}`,{method:"PATCH",headers:{"Content-Type":"application/json"},body:JSON.stringify(draft)});
+    const data=await response.json();
+    if (!response.ok) return setError(data.error||"Account could not be saved");
+    setAccounts(data.accounts||[]);
+    setEditing("");
+  }
+  return <div className="accounts-page">{alerts.length>0&&<section className="account-alerts"><div><Bell size={20}/><span><strong>{alerts.length} account alert{alerts.length===1?"":"s"}</strong><small>Review missing or overdue statements below.</small></span></div>{alerts.map(account=><p key={account.id}><strong>{account.bank} {account.name}</strong> — {statusText(account)}{account.missingPeriods?.length?` (${account.missingPeriods.join(", ")})`:""}</p>)}</section>}<div className="account-overview-heading"><div><span>ACCOUNT OVERVIEW</span><h2>Your connected statement accounts</h2><p>Account details are stored locally and can be corrected at any time.</p></div><strong>{accounts.length} accounts</strong></div>{error&&<div className="manager-error">{error}</div>}<div className="account-card-grid">{accounts.map(account=><article className="account-card" key={account.id}><div className="account-card-top"><div className="account-bank-icon"><Landmark size={20}/></div><div><span>{account.bank}</span><h3>{account.name}</h3></div><small className={`account-status ${account.status}`}>{statusText(account)}</small></div>{editing===account.id?<form className="account-edit-form" onSubmit={saveAccount}><label><span>Bank</span><input value={draft.bank} onChange={event=>setDraft({...draft,bank:event.target.value})}/></label><label><span>Account name</span><input value={draft.name} onChange={event=>setDraft({...draft,name:event.target.value})}/></label><label><span>Account number</span><input value={draft.accountNumber} onChange={event=>setDraft({...draft,accountNumber:event.target.value})}/></label><label><span>BSB</span><input value={draft.bsb} onChange={event=>setDraft({...draft,bsb:event.target.value})} placeholder="Not applicable"/></label><div><button>Save changes</button><button type="button" onClick={()=>setEditing("")}>Cancel</button></div></form>:<><dl><div><dt>Account number</dt><dd>{account.accountNumber||"Not available"}</dd></div><div><dt>BSB</dt><dd>{account.bsb||"Not applicable"}</dd></div><div><dt>Statements</dt><dd>{account.statementCount}</dd></div><div><dt>Latest statement</dt><dd>{account.latestStatementEnd?new Date(account.latestStatementEnd+"T00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short",year:"numeric"}):"None"}</dd></div></dl>{account.missingPeriods?.length>0&&<div className="account-gap"><Bell size={14}/><span>Possible missing period: {account.missingPeriods.join(", ")}</span></div>}<button className="account-edit-button" onClick={()=>beginEdit(account)}><Pencil size={14}/>Edit account details</button></>}</article>)}</div></div>;
+}
+function PayAndTax() {
+  const today=new Date().toISOString().slice(0,10);
+  const [section,setSection]=useState("payslips");
+  const [documents,setDocuments]=useState([]);
+  const [viewing,setViewing]=useState(null);
+  const [error,setError]=useState("");
+  const [pay,setPay]=useState({employer:"",documentDate:today,gross:"",net:"",tax:""});
+  const [deduction,setDeduction]=useState({title:"",documentDate:today,amount:"",category:"Work expenses",notes:""});
+  const [payFile,setPayFile]=useState(null);
+  const [deductionFile,setDeductionFile]=useState(null);
+  const load=()=>fetch("/api/documents").then(response=>response.json()).then(data=>setDocuments(data.documents||[])).catch(()=>setError("Pay and tax records could not be loaded"));
+  useEffect(load,[]);
+  async function upload(type,meta,file) {
+    setError("");
+    const response=await fetch(`/api/documents/${type}`,{method:"POST",headers:{"Content-Type":file?.type||"application/octet-stream","X-File-Name":encodeURIComponent(file?.name||""),"X-Document-Meta":encodeURIComponent(JSON.stringify(meta))},body:file?await file.arrayBuffer():new Uint8Array()});
+    const data=await response.json();
+    if (!response.ok) throw new Error(data.error||"Record could not be saved");
+    await load();
+  }
+  async function addPayslip(event) {
+    event.preventDefault();
+    try { await upload("payslip",pay,payFile);setPay({...pay,gross:"",net:"",tax:""});setPayFile(null);event.currentTarget.reset(); }
+    catch(reason){setError(reason.message)}
+  }
+  async function addDeduction(event) {
+    event.preventDefault();
+    try { await upload("deduction",deduction,deductionFile);setDeduction({...deduction,title:"",amount:"",notes:""});setDeductionFile(null);event.currentTarget.reset(); }
+    catch(reason){setError(reason.message)}
+  }
+  async function remove(document) {
+    if (!window.confirm(`Delete “${document.title||document.filename}”?`)) return;
+    await fetch(`/api/documents/${document.id}`,{method:"DELETE"});
+    if(viewing?.id===document.id)setViewing(null);
+    await load();
+  }
+  const payslips=documents.filter(document=>document.type==="payslip");
+  const deductions=documents.filter(document=>document.type==="deduction");
+  const financialYear=date=>{const value=new Date(date+"T00:00"),start=value.getMonth()>=6?value.getFullYear():value.getFullYear()-1;return `${start}–${String(start+1).slice(2)}`};
+  const summaries=[...new Set(documents.map(document=>financialYear(document.documentDate)))].sort().reverse().map(year=>{const slips=payslips.filter(item=>financialYear(item.documentDate)===year),claims=deductions.filter(item=>financialYear(item.documentDate)===year);return {year,gross:slips.reduce((sum,item)=>sum+item.gross,0),net:slips.reduce((sum,item)=>sum+item.net,0),tax:slips.reduce((sum,item)=>sum+item.tax,0),deductions:claims.reduce((sum,item)=>sum+item.amount,0)}});
+  if (viewing) return <section className="panel statement-viewer"><div className="statement-viewer-head"><div><span>{viewing.type==="payslip"?"PAY SLIP":"DEDUCTION DOCUMENT"}</span><h3>{viewing.title||viewing.filename}</h3><small>{viewing.filename}</small></div><button onClick={()=>setViewing(null)}>Back to pay &amp; tax</button></div><iframe title={viewing.filename} src={`/api/documents/file/${viewing.id}`}/></section>;
+  return <div className="pay-tax-page"><div className="record-tabs"><button className={section==="payslips"?"active":""} onClick={()=>setSection("payslips")}>Pay slips</button><button className={section==="tax"?"active":""} onClick={()=>setSection("tax")}>EOFY tax &amp; deductions</button></div>{error&&<div className="manager-error">{error}</div>}{section==="payslips"?<><section className="panel record-entry"><div><span>XERO PAY SLIPS</span><h2>Add a pay slip</h2><p>Store the original file and the figures needed for your EOFY summary.</p></div><form onSubmit={addPayslip}><label><span>Employer</span><input required value={pay.employer} onChange={event=>setPay({...pay,employer:event.target.value})}/></label><label><span>Pay date</span><input required type="date" value={pay.documentDate} onChange={event=>setPay({...pay,documentDate:event.target.value})}/></label><label><span>Gross pay</span><input type="number" step=".01" value={pay.gross} onChange={event=>setPay({...pay,gross:event.target.value})}/></label><label><span>Net pay</span><input type="number" step=".01" value={pay.net} onChange={event=>setPay({...pay,net:event.target.value})}/></label><label><span>Tax withheld</span><input type="number" step=".01" value={pay.tax} onChange={event=>setPay({...pay,tax:event.target.value})}/></label><label><span>Xero PDF or image</span><input required type="file" accept="application/pdf,image/*" onChange={event=>setPayFile(event.target.files?.[0])}/></label><button>Save pay slip</button></form></section><DocumentList documents={payslips} onView={setViewing} onDelete={remove}/></>:<><div className="tax-summary-grid">{summaries.length?summaries.map(summary=><article key={summary.year}><span>FY {summary.year}</span><dl><div><dt>Gross income</dt><dd>{fmt.format(summary.gross)}</dd></div><div><dt>Tax withheld</dt><dd>{fmt.format(summary.tax)}</dd></div><div><dt>Net pay</dt><dd>{fmt.format(summary.net)}</dd></div><div><dt>Deductions</dt><dd>{fmt.format(summary.deductions)}</dd></div></dl></article>):<article><span>EOFY SUMMARY</span><p>Add pay slips or deductions to begin.</p></article>}</div><section className="panel record-entry"><div><span>DEDUCTIBLE EXPENSE</span><h2>Add a deduction</h2><p>Keep the amount, reason and supporting receipt together.</p></div><form onSubmit={addDeduction}><label><span>Description</span><input required value={deduction.title} onChange={event=>setDeduction({...deduction,title:event.target.value})}/></label><label><span>Date</span><input required type="date" value={deduction.documentDate} onChange={event=>setDeduction({...deduction,documentDate:event.target.value})}/></label><label><span>Amount</span><input required type="number" step=".01" value={deduction.amount} onChange={event=>setDeduction({...deduction,amount:event.target.value})}/></label><label><span>Category</span><input value={deduction.category} onChange={event=>setDeduction({...deduction,category:event.target.value})}/></label><label className="wide-field"><span>Notes</span><input value={deduction.notes} onChange={event=>setDeduction({...deduction,notes:event.target.value})}/></label><label><span>Receipt (optional)</span><input type="file" accept="application/pdf,image/*" onChange={event=>setDeductionFile(event.target.files?.[0])}/></label><button>Save deduction</button></form></section><DocumentList documents={deductions} onView={setViewing} onDelete={remove}/></>}</div>;
+}
+function DocumentList({documents,onView,onDelete}) {
+  return <section className="panel document-list"><div className="document-list-head"><span>Date</span><span>Record</span><span>Amount</span><span>Actions</span></div>{documents.map(document=><div className="document-list-row" key={document.id}><span>{new Date(document.documentDate+"T00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short",year:"numeric"})}</span><span><strong>{document.type==="payslip"?document.employer:document.title}</strong><small>{document.filename||document.category}</small></span><strong>{fmt.format(document.type==="payslip"?document.gross:document.amount)}</strong><div>{document.filename&&<button onClick={()=>onView(document)}><FileText size={13}/>View</button>}<button className="delete-action" onClick={()=>onDelete(document)}><Trash2 size={13}/>Delete</button></div></div>)}{!documents.length&&<div className="empty-subcategories"><strong>No records yet</strong><span>Add your first record above.</span></div>}</section>;
+}
 function Statements() {
   const [statements,setStatements]=useState([]);
   const [selected,setSelected]=useState("");
@@ -592,7 +670,30 @@ function EditableAmount({row,onChange}) {
   const save=()=>{setEditing(false);onChange(row,value)};
   return <input className="amount-input" type="number" step="0.01" autoFocus value={value} onChange={event=>setValue(event.target.value)} onBlur={save} onKeyDown={event=>{if(event.key==="Enter")event.currentTarget.blur();if(event.key==="Escape"){setValue(row.amount);setEditing(false)}}}/>;
 }
-function Categorise({rows,categories:categoryRecords,onAddCategory,onDeleteCategory,onCategoryChange,onSubcategoryChange,onBulkCategoryChange,onSubscriptionChange,onExcludedChange,onAmountChange,onDeleteTransaction,onDeleteTransactions}) {
+function ReceiptModal({row,onClose,onCountChange}) {
+  const [receipts,setReceipts]=useState([]);
+  const [viewing,setViewing]=useState(null);
+  const [error,setError]=useState("");
+  const input=useRef();
+  const load=()=>fetch(`/api/receipts?transactionId=${row.id}`).then(response=>response.json()).then(data=>{setReceipts(data.receipts||[]);onCountChange((data.receipts||[]).length)}).catch(()=>setError("Receipts could not be loaded"));
+  useEffect(load,[row.id]);
+  async function attach(file) {
+    if (!file) return;
+    setError("");
+    const response=await fetch(`/api/receipts/${row.id}`,{method:"POST",headers:{"Content-Type":file.type||"application/octet-stream","X-File-Name":encodeURIComponent(file.name)},body:await file.arrayBuffer()});
+    const data=await response.json();
+    if (!response.ok) return setError(data.error||"Receipt could not be attached");
+    await load();
+  }
+  async function remove(receipt) {
+    if (!window.confirm(`Delete receipt “${receipt.filename}”?`)) return;
+    await fetch(`/api/receipts/${receipt.id}`,{method:"DELETE"});
+    if (viewing?.id===receipt.id)setViewing(null);
+    await load();
+  }
+  return <div className="modal-backdrop" onMouseDown={event=>event.target===event.currentTarget&&onClose()}><div className="receipt-modal" role="dialog" aria-modal="true" aria-label="Transaction receipts"><div className="modal-heading"><div><span>RECEIPTS</span><h2>{row.description}</h2><p>{new Date(row.date+"T00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short",year:"numeric"})} · {fmt.format(Math.abs(row.amount))}</p></div><button onClick={onClose}><X size={20}/></button></div>{error&&<div className="manager-error">{error}</div>}{viewing?<><div className="receipt-viewer-head"><button onClick={()=>setViewing(null)}>Back to receipts</button><strong>{viewing.filename}</strong></div><iframe title={viewing.filename} src={`/api/receipts/file/${viewing.id}`}/></>:<><input ref={input} hidden type="file" accept="application/pdf,image/*" onChange={event=>attach(event.target.files?.[0])}/><button className="receipt-upload" onClick={()=>input.current?.click()}><Paperclip size={17}/><span><strong>Attach a receipt</strong><small>Choose a PDF or photo from your Mac</small></span></button><div className="receipt-list">{receipts.map(receipt=><div key={receipt.id}><button onClick={()=>setViewing(receipt)}><FileText size={18}/><span><strong>{receipt.filename}</strong><small>{new Date(receipt.createdAt+"Z").toLocaleDateString("en-AU")}</small></span></button><button onClick={()=>remove(receipt)} aria-label={`Delete ${receipt.filename}`}><Trash2 size={14}/></button></div>)}{!receipts.length&&<div className="empty-subcategories"><strong>No receipts attached</strong><span>Add a PDF or photo above.</span></div>}</div></>}</div></div>;
+}
+function Categorise({rows,categories:categoryRecords,onAddCategory,onRenameCategory,onDeleteCategory,onCategoryChange,onSubcategoryChange,onBulkCategoryChange,onSubscriptionChange,onExcludedChange,onAmountChange,onReceiptCountChange,onDeleteTransaction,onDeleteTransactions}) {
   const [search,setSearch] = useState("");
   const [showCategory,setShowCategory] = useState("All");
   const [selected,setSelected] = useState(new Set());
@@ -602,13 +703,20 @@ function Categorise({rows,categories:categoryRecords,onAddCategory,onDeleteCateg
   const [visibility,setVisibility] = useState("All");
   const [newCategory,setNewCategory]=useState("");
   const [newSubcategory,setNewSubcategory]=useState("");
-  const [parentCategory,setParentCategory]=useState("");
+  const [managerParentId,setManagerParentId]=useState("");
+  const [editingId,setEditingId]=useState(null);
+  const [editingName,setEditingName]=useState("");
+  const [managerError,setManagerError]=useState("");
   const [page,setPage]=useState(0);
   const [sort,setSort]=useState({key:"date",direction:"desc"});
   const [manageOpen,setManageOpen]=useState(false);
+  const [receiptRow,setReceiptRow]=useState(null);
   const parents=categoryRecords.filter(category=>!category.parentId).filter((category,index,array)=>array.findIndex(item=>item.name===category.name)===index);
   const categories=parents.map(category=>category.name);
   const childrenFor=name=>{const parent=parents.find(category=>category.name===name);return parent?categoryRecords.filter(category=>category.parentId===parent.id):[]};
+  const activeParent=parents.find(category=>String(category.id)===String(managerParentId))||parents[0];
+  const activeChildren=activeParent?childrenFor(activeParent.name):[];
+  useEffect(()=>{if(manageOpen&&activeParent&&String(activeParent.id)!==String(managerParentId))setManagerParentId(String(activeParent.id))},[manageOpen,categoryRecords.length]);
   const bulkSubcategories=childrenFor(bulkCategory);
   const recurring=subscriptionKeys(rows);
   const isSubscription=row=>Boolean(row.isSubscription)||recurring.has(subscriptionKey(row.description));
@@ -652,21 +760,42 @@ function Categorise({rows,categories:categoryRecords,onAddCategory,onDeleteCateg
   async function createCategory(event) {
     event.preventDefault();
     if (!newCategory.trim()) return;
-    await onAddCategory(newCategory.trim());
-    setNewCategory("");
+    try {
+      setManagerError("");
+      await onAddCategory(newCategory.trim());
+      setNewCategory("");
+    } catch(error) { setManagerError(error.message); }
   }
   async function createSubcategory(event) {
     event.preventDefault();
-    const parent=parents.find(category=>String(category.id)===parentCategory);
-    if (!parent||!newSubcategory.trim()) return;
-    await onAddCategory(newSubcategory.trim(),parent.id);
-    setNewSubcategory("");
+    if (!activeParent||!newSubcategory.trim()) return;
+    try {
+      setManagerError("");
+      await onAddCategory(newSubcategory.trim(),activeParent.id);
+      setNewSubcategory("");
+    } catch(error) { setManagerError(error.message); }
+  }
+  async function saveRename(event) {
+    event.preventDefault();
+    if (!editingId||!editingName.trim()) return;
+    try {
+      setManagerError("");
+      await onRenameCategory(editingId,editingName.trim());
+      setEditingId(null);
+      setEditingName("");
+    } catch(error) { setManagerError(error.message); }
+  }
+  function startRename(record) {
+    setManagerError("");
+    setEditingId(record.id);
+    setEditingName(record.name);
   }
   return <section className="panel categorise-page">
     <div className="category-page-tools"><button className="manage-categories-button" onClick={()=>setManageOpen(true)}>Manage categories</button></div>
-    {manageOpen&&<div className="modal-backdrop" onMouseDown={event=>event.target===event.currentTarget&&setManageOpen(false)}><div className="category-modal" role="dialog" aria-modal="true" aria-label="Manage categories and subcategories"><div className="modal-heading"><div><span>CATEGORY SETUP</span><h2>Manage categories</h2><p>Add or remove categories and subcategories.</p></div><button onClick={()=>setManageOpen(false)} aria-label="Close category manager"><X size={20}/></button></div><div className="category-manager"><form onSubmit={createCategory}><input value={newCategory} onChange={e=>setNewCategory(e.target.value)} placeholder="New category"/><button>Add category</button></form><form onSubmit={createSubcategory}><select value={parentCategory} onChange={e=>setParentCategory(e.target.value)}><option value="">Parent category</option>{parents.map(category=><option key={category.id} value={category.id}>{category.name}</option>)}</select><input value={newSubcategory} onChange={e=>setNewSubcategory(e.target.value)} placeholder="New subcategory"/><button>Add subcategory</button></form></div><div className="category-admin-list">{parents.map(parent=><div className="category-admin-group" key={parent.id}><span><strong>{parent.name}</strong>{parent.name!=="Other"&&<button onClick={()=>window.confirm(`Delete category “${parent.name}”? Its transactions will move to Other.`)&&onDeleteCategory(parent.id)} aria-label={`Delete ${parent.name}`}><Trash2 size={12}/></button>}</span>{childrenFor(parent.name).map(child=><span className="subcategory-chip" key={child.id}>{child.name}<button onClick={()=>window.confirm(`Delete subcategory “${child.name}”?`)&&onDeleteCategory(child.id)} aria-label={`Delete ${child.name}`}><X size={12}/></button></span>)}</div>)}</div></div></div>}
+    {manageOpen&&<div className="modal-backdrop" onMouseDown={event=>event.target===event.currentTarget&&setManageOpen(false)}><div className="category-modal category-modal-redesign" role="dialog" aria-modal="true" aria-label="Manage categories and subcategories"><div className="modal-heading"><div><span>CATEGORY SETUP</span><h2>Categories &amp; subcategories</h2><p>Select a category to organise and rename its subcategories.</p></div><button onClick={()=>setManageOpen(false)} aria-label="Close category manager"><X size={20}/></button></div>{managerError&&<div className="manager-error">{managerError}</div>}<div className="category-workspace"><div className="category-browser"><form className="category-add-form" onSubmit={createCategory}><input value={newCategory} onChange={event=>setNewCategory(event.target.value)} placeholder="New category"/><button>Add</button></form><div className="category-browser-list">{parents.map(parent=><button type="button" className={activeParent?.id===parent.id?"active":""} key={parent.id} onClick={()=>{setManagerParentId(String(parent.id));setEditingId(null);setManagerError("")}}><span><strong>{parent.name}</strong><small>{childrenFor(parent.name).length} subcategor{childrenFor(parent.name).length===1?"y":"ies"}</small></span><ChevronRight size={15}/></button>)}</div></div><section className="subcategory-editor">{activeParent&&<><div className="subcategory-editor-head"><div><small>CATEGORY</small>{editingId===activeParent.id?<form className="rename-form" onSubmit={saveRename}><input autoFocus value={editingName} onChange={event=>setEditingName(event.target.value)}/><button>Save</button><button type="button" onClick={()=>setEditingId(null)}>Cancel</button></form>:<div className="editable-title"><h3>{activeParent.name}</h3><button onClick={()=>startRename(activeParent)}><Pencil size={14}/>Rename</button>{activeParent.name!=="Other"&&<button className="delete-action" onClick={()=>window.confirm(`Delete category “${activeParent.name}”? Its transactions will move to Other.`)&&onDeleteCategory(activeParent.id)}><Trash2 size={14}/>Delete</button>}</div>}</div></div><form className="subcategory-add-form" onSubmit={createSubcategory}><input value={newSubcategory} onChange={event=>setNewSubcategory(event.target.value)} placeholder={`Add a subcategory to ${activeParent.name}`}/><button>Add subcategory</button></form><div className="subcategory-editor-list">{activeChildren.length?activeChildren.map(child=><div className="subcategory-editor-row" key={child.id}>{editingId===child.id?<form className="rename-form" onSubmit={saveRename}><input autoFocus value={editingName} onChange={event=>setEditingName(event.target.value)}/><button>Save</button><button type="button" onClick={()=>setEditingId(null)}>Cancel</button></form>:<><span>{child.name}</span><div><button onClick={()=>startRename(child)}><Pencil size={13}/>Rename</button><button className="delete-action" onClick={()=>window.confirm(`Delete subcategory “${child.name}”?`)&&onDeleteCategory(child.id)}><Trash2 size={13}/>Delete</button></div></>}</div>):<div className="empty-subcategories"><strong>No subcategories yet</strong><span>Add one above to break {activeParent.name} into more useful groups.</span></div>}</div></>}</section></div></div></div>}
     <div className="category-toolbar"><input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search description or amount (amounts match ±2%)"/><select value={showCategory} onChange={e=>setShowCategory(e.target.value)}><option>All</option>{categories.map(category=><option key={category}>{category}</option>)}</select><select value={visibility} onChange={e=>setVisibility(e.target.value)}><option>All</option><option>Included</option><option>Excluded</option></select><label className="subscription-filter"><input type="checkbox" checked={subscriptionsOnly} onChange={e=>setSubscriptionsOnly(e.target.checked)}/><Star size={14}/>Subscriptions only</label>{selected.size>0&&<div className="bulk-tools"><span>{selected.size} selected</span><select value={bulkCategory} onChange={e=>{setBulkCategory(e.target.value);setBulkSubcategory("")}}>{categories.map(category=><option key={category}>{category}</option>)}</select><select value={bulkSubcategory} onChange={e=>setBulkSubcategory(e.target.value)} disabled={!bulkSubcategories.length}><option value="">{bulkSubcategories.length?"No subcategory":"None available"}</option>{bulkSubcategories.map(child=><option key={child.id}>{child.name}</option>)}</select><button onClick={applyBulk}>Apply both</button><button className="danger-button" onClick={removeSelected}><Trash2 size={14}/>Delete</button></div>}</div>
-    <div className="category-list"><div className="category-row category-head"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label={allVisibleSelected?"Clear all filtered transactions":"Select all filtered transactions"} title={allVisibleSelected?"Clear all filtered transactions":"Select all filtered transactions"}/>{sortLabel("Date","date")}{sortLabel("Description","description")}{sortLabel("Amount","amount")}{sortLabel("Category","category")}{sortLabel("Subcategory","subcategory")}<span>Subscription</span><span>Totals</span><span>Delete</span></div>{paged.map(row=>{const key=row.id || `${row.date}-${row.description}`,subscription=isSubscription(row),children=childrenFor(row.category);return <div className={`category-row ${subscription?"subscription-row":""} ${row.isExcluded?"excluded-row":""}`} key={key}><input type="checkbox" checked={selected.has(key)} onChange={()=>toggle(key)}/><span>{new Date(row.date+"T00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short",year:"numeric"})}</span><div className="transaction-description"><strong>{row.description}</strong><small className="source-label" title={row.source}>{statementSourceLabel(row.source)}</small></div><EditableAmount row={row} onChange={onAmountChange}/><select value={row.category} onChange={e=>onCategoryChange(row,e.target.value)}>{categories.map(category=><option key={category}>{category}</option>)}</select><select value={row.subcategory||""} onChange={e=>onSubcategoryChange(row,e.target.value)} disabled={!children.length}><option value="">{children.length?"No subcategory":"None available"}</option>{children.map(child=><option key={child.id}>{child.name}</option>)}</select><button className={`subscription-toggle ${row.isSubscription?"active":""}`} onClick={()=>onSubscriptionChange(row,!row.isSubscription)}><Star size={14}/>{row.isSubscription?"Marked":"Mark"}</button><button className={`exclude-toggle ${row.isExcluded?"active":""}`} onClick={()=>onExcludedChange(row,!row.isExcluded)}><EyeOff size={14}/>{row.isExcluded?"Excluded":"Exclude"}</button><button className="row-delete" onClick={()=>window.confirm("Delete this transaction?")&&onDeleteTransaction(row)} aria-label={`Delete ${row.description}`}><Trash2 size={14}/></button></div>})}</div>
+    <div className="category-list"><div className="category-row category-head"><input type="checkbox" checked={allVisibleSelected} onChange={toggleAllVisible} aria-label={allVisibleSelected?"Clear all filtered transactions":"Select all filtered transactions"} title={allVisibleSelected?"Clear all filtered transactions":"Select all filtered transactions"}/>{sortLabel("Date","date")}{sortLabel("Description","description")}{sortLabel("Amount","amount")}{sortLabel("Category","category")}{sortLabel("Subcategory","subcategory")}<span>Subscription</span><span>Totals</span><span>Delete</span></div>{paged.map(row=>{const key=row.id || `${row.date}-${row.description}`,subscription=isSubscription(row),children=childrenFor(row.category);return <div className={`category-row ${subscription?"subscription-row":""} ${row.isExcluded?"excluded-row":""}`} key={key}><input type="checkbox" checked={selected.has(key)} onChange={()=>toggle(key)}/><span>{new Date(row.date+"T00:00").toLocaleDateString("en-AU",{day:"numeric",month:"short",year:"numeric"})}</span><div className="transaction-description"><strong>{row.description}</strong><span className="transaction-meta"><small className="source-label" title={row.source}>{statementSourceLabel(row.source)}</small><button className={row.receiptCount?"receipt-link attached":"receipt-link"} onClick={()=>setReceiptRow(row)}><Paperclip size={10}/>{row.receiptCount?`${row.receiptCount} receipt${row.receiptCount===1?"":"s"}`:"Attach receipt"}</button></span></div><EditableAmount row={row} onChange={onAmountChange}/><select value={row.category} onChange={e=>onCategoryChange(row,e.target.value)}>{categories.map(category=><option key={category}>{category}</option>)}</select><select value={row.subcategory||""} onChange={e=>onSubcategoryChange(row,e.target.value)} disabled={!children.length}><option value="">{children.length?"No subcategory":"None available"}</option>{children.map(child=><option key={child.id}>{child.name}</option>)}</select><button className={`subscription-toggle ${row.isSubscription?"active":""}`} onClick={()=>onSubscriptionChange(row,!row.isSubscription)}><Star size={14}/>{row.isSubscription?"Marked":"Mark"}</button><button className={`exclude-toggle ${row.isExcluded?"active":""}`} onClick={()=>onExcludedChange(row,!row.isExcluded)}><EyeOff size={14}/>{row.isExcluded?"Excluded":"Exclude"}</button><button className="row-delete" onClick={()=>window.confirm("Delete this transaction?")&&onDeleteTransaction(row)} aria-label={`Delete ${row.description}`}><Trash2 size={14}/></button></div>})}</div>
+    {receiptRow&&<ReceiptModal row={receiptRow} onClose={()=>setReceiptRow(null)} onCountChange={count=>onReceiptCountChange(receiptRow,count)}/>}
     <Pager page={page} setPage={setPage} total={visible.length}/>
   </section>;
 }

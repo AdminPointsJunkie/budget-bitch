@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { basename, join } from "node:path";
 import { homedir } from "node:os";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 
 const extractor = fileURLToPath(new URL("./scripts/extract_pdf.py", import.meta.url));
@@ -13,6 +13,10 @@ mkdirSync(dataDirectory, { recursive:true });
 const databasePath = `${dataDirectory}/ledgerly.db`;
 const statementsDirectory = join(dataDirectory,"statements");
 mkdirSync(statementsDirectory,{recursive:true});
+const receiptsDirectory=join(dataDirectory,"receipts");
+const documentsDirectory=join(dataDirectory,"documents");
+mkdirSync(receiptsDirectory,{recursive:true});
+mkdirSync(documentsDirectory,{recursive:true});
 const database = new DatabaseSync(databasePath);
 database.exec(`
   CREATE TABLE IF NOT EXISTS transactions (
@@ -74,15 +78,60 @@ database.exec(`
 `);
 database.exec("CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
 database.exec("CREATE TABLE IF NOT EXISTS statements (filename TEXT PRIMARY KEY, imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)");
+database.exec(`CREATE TABLE IF NOT EXISTS transaction_attachments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+  filename TEXT NOT NULL,
+  stored_name TEXT NOT NULL DEFAULT '',
+  mime_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+)`);
+database.exec(`CREATE TABLE IF NOT EXISTS documents (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  type TEXT NOT NULL,
+  filename TEXT NOT NULL DEFAULT '',
+  stored_name TEXT NOT NULL DEFAULT '',
+  mime_type TEXT NOT NULL DEFAULT 'application/octet-stream',
+  title TEXT NOT NULL DEFAULT '',
+  document_date TEXT NOT NULL,
+  employer TEXT NOT NULL DEFAULT '',
+  gross REAL NOT NULL DEFAULT 0,
+  net REAL NOT NULL DEFAULT 0,
+  tax REAL NOT NULL DEFAULT 0,
+  amount REAL NOT NULL DEFAULT 0,
+  category TEXT NOT NULL DEFAULT '',
+  notes TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+)`);
 const rememberStatement=database.prepare("INSERT OR IGNORE INTO statements (filename) VALUES (?)");
 const pdfSources=database.prepare("SELECT DISTINCT source FROM transactions WHERE LOWER(source) LIKE '%.pdf'").all();
-for (const {source} of pdfSources) {
-  const filename=basename(source);
+const knownStatementFiles=new Set(pdfSources.map(({source})=>basename(source)));
+const downloadsDirectory=join(homedir(),"Downloads");
+if (existsSync(downloadsDirectory)) {
+  for (const filename of readdirSync(downloadsDirectory)) {
+    if (/^(?:\d{2}[_-].*(?:Statement|_\d{4})|Mortgage_Simplifier|Orange_Everyday|eStatement).*\.pdf$/i.test(filename)) knownStatementFiles.add(filename);
+  }
+}
+for (const filename of knownStatementFiles) {
   const storedPath=join(statementsDirectory,filename);
   const downloadPath=join(homedir(),"Downloads",filename);
   if (!existsSync(storedPath)&&existsSync(downloadPath)) copyFileSync(downloadPath,storedPath);
   if (existsSync(storedPath)) rememberStatement.run(filename);
 }
+database.exec(`CREATE TABLE IF NOT EXISTS accounts (
+  id TEXT PRIMARY KEY,
+  bank TEXT NOT NULL,
+  name TEXT NOT NULL,
+  account_number TEXT NOT NULL DEFAULT '',
+  bsb TEXT NOT NULL DEFAULT '',
+  source_pattern TEXT NOT NULL,
+  cadence_months INTEGER NOT NULL DEFAULT 1
+)`);
+const seedAccount=database.prepare("INSERT OR IGNORE INTO accounts (id, bank, name, account_number, bsb, source_pattern, cadence_months) VALUES (?, ?, ?, ?, ?, ?, ?)");
+seedAccount.run("amex-explorer","American Express","Explorer Credit Card","Ending 93007","","^08_",1);
+seedAccount.run("hsbc-everyday","HSBC","Everyday Global","136991090","342-201","_Statement.pdf$",1);
+seedAccount.run("ing-orange","ING","Orange Everyday","311458516","923-100","^Orange_Everyday_",3);
+seedAccount.run("ing-mortgage","ING","Mortgage Simplifier","29775089","923-100","^Mortgage_Simplifier_",6);
 const duplicateParents = database.prepare("SELECT name, MIN(id) AS keep_id FROM categories WHERE parent_id IS NULL GROUP BY name HAVING COUNT(*) > 1").all();
 for (const duplicate of duplicateParents) {
   const duplicateIds = database.prepare("SELECT id FROM categories WHERE parent_id IS NULL AND name = ? AND id != ?").all(duplicate.name, duplicate.keep_id);
@@ -168,6 +217,42 @@ function sendJson(res, value, status = 200) {
   res.end(JSON.stringify(value));
 }
 
+const statementMonths={jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+function statementCoverage(filename) {
+  let match=filename.match(/^(\d{2})_([A-Za-z]{3})_(\d{4})_-_(\d{2})_([A-Za-z]{3})_(\d{4})/);
+  if (match) return {
+    start:new Date(Number(match[3]),statementMonths[match[2].toLowerCase()],Number(match[1]),12),
+    end:new Date(Number(match[6]),statementMonths[match[5].toLowerCase()],Number(match[4]),12)
+  };
+  match=filename.match(/^(\d{2})-(\d{2})-(\d{4})_Statement/i);
+  if (match) {
+    const end=new Date(Number(match[3]),Number(match[2])-1,Number(match[1]),12);
+    const start=new Date(end); start.setMonth(start.getMonth()-1);
+    return {start,end};
+  }
+  match=filename.match(/_(\d{4})-(\d{2})-(\d{2})_(\d{4})-(\d{2})-(\d{2})\.pdf$/i);
+  if (match) return {
+    start:new Date(Number(match[1]),Number(match[2])-1,Number(match[3]),12),
+    end:new Date(Number(match[4]),Number(match[5])-1,Number(match[6]),12)
+  };
+  return null;
+}
+function accountOverview(account,statementRows) {
+  const pattern=new RegExp(account.source_pattern,"i");
+  const statements=statementRows.filter(statement=>pattern.test(statement.filename)).map(statement=>({...statement,coverage:statementCoverage(statement.filename)})).filter(statement=>statement.coverage).sort((a,b)=>a.coverage.end-b.coverage.end);
+  const missing=[];
+  for (let index=1;index<statements.length;index+=1) {
+    const previous=statements[index-1].coverage.end;
+    const current=statements[index].coverage.end;
+    const monthGap=(current.getFullYear()-previous.getFullYear())*12+current.getMonth()-previous.getMonth();
+    if (monthGap>account.cadence_months+1) missing.push(`${previous.toLocaleDateString("en-AU",{month:"short",year:"numeric"})} – ${current.toLocaleDateString("en-AU",{month:"short",year:"numeric"})}`);
+  }
+  const latest=statements.at(-1);
+  const staleAfterDays=Math.max(45,account.cadence_months*35);
+  const daysSinceLatest=latest?Math.floor((Date.now()-latest.coverage.end.getTime())/86400000):null;
+  return {...account,statementCount:statements.length,latestStatement:latest?.filename||"",latestStatementEnd:latest?.coverage.end.toISOString().slice(0,10)||"",daysSinceLatest,missingPeriods:missing,status:!latest?"missing":daysSinceLatest>staleAfterDays?"stale":missing.length?"gap":"current"};
+}
+
 function localDataServices() {
   return {
     name: "local-data-services",
@@ -219,10 +304,129 @@ function localDataServices() {
           sendJson(res,{error:error.message},400);
         }
       });
+      server.middlewares.use("/api/accounts", async (req,res,next)=>{
+        try {
+          const statementRows=database.prepare("SELECT filename FROM statements ORDER BY filename").all();
+          if (req.method==="GET"&&req.url==="/") {
+            const accounts=database.prepare("SELECT id, bank, name, account_number AS accountNumber, bsb, source_pattern AS sourcePattern, cadence_months AS cadenceMonths FROM accounts ORDER BY bank, name").all();
+            return sendJson(res,{accounts:accounts.map(account=>accountOverview({...account,source_pattern:account.sourcePattern,cadence_months:account.cadenceMonths},statementRows))});
+          }
+          const match=req.url.match(/^\/([^/]+)$/);
+          if (req.method==="PATCH"&&match) {
+            const id=decodeURIComponent(match[1]);
+            const changes=JSON.parse((await readBody(req,1024*20)).toString());
+            const account=database.prepare("SELECT id FROM accounts WHERE id = ?").get(id);
+            if (!account) return sendJson(res,{error:"Account not found"},404);
+            const bank=String(changes.bank||"").trim(),name=String(changes.name||"").trim();
+            if (!bank||!name) return sendJson(res,{error:"Bank and account name are required"},400);
+            database.prepare("UPDATE accounts SET bank = ?, name = ?, account_number = ?, bsb = ? WHERE id = ?").run(bank,name,String(changes.accountNumber||"").trim(),String(changes.bsb||"").trim(),id);
+            const updated=database.prepare("SELECT id, bank, name, account_number AS accountNumber, bsb, source_pattern AS sourcePattern, cadence_months AS cadenceMonths FROM accounts ORDER BY bank, name").all();
+            return sendJson(res,{accounts:updated.map(item=>accountOverview({...item,source_pattern:item.sourcePattern,cadence_months:item.cadenceMonths},statementRows))});
+          }
+          next();
+        } catch(error) {
+          sendJson(res,{error:error.message},400);
+        }
+      });
+      server.middlewares.use("/api/receipts", async (req,res,next)=>{
+        try {
+          if (req.method==="GET"&&req.url.startsWith("/?")) {
+            const transactionId=Number(new URL(req.url,"http://local").searchParams.get("transactionId"));
+            const receipts=database.prepare("SELECT id, transaction_id AS transactionId, filename, mime_type AS mimeType, created_at AS createdAt FROM transaction_attachments WHERE transaction_id = ? ORDER BY id DESC").all(transactionId);
+            return sendJson(res,{receipts});
+          }
+          let match=req.url.match(/^\/file\/(\d+)$/);
+          if (req.method==="GET"&&match) {
+            const receipt=database.prepare("SELECT filename, stored_name AS storedName, mime_type AS mimeType FROM transaction_attachments WHERE id = ?").get(Number(match[1]));
+            if (!receipt||!existsSync(join(receiptsDirectory,receipt.storedName))) return sendJson(res,{error:"Receipt not found"},404);
+            res.statusCode=200;
+            res.setHeader("Content-Type",receipt.mimeType);
+            res.setHeader("Content-Disposition",`inline; filename="${receipt.filename.replaceAll('"',"")}"`);
+            return res.end(readFileSync(join(receiptsDirectory,receipt.storedName)));
+          }
+          match=req.url.match(/^\/(\d+)$/);
+          if (req.method==="POST"&&match) {
+            const transactionId=Number(match[1]);
+            if (!database.prepare("SELECT id FROM transactions WHERE id = ?").get(transactionId)) return sendJson(res,{error:"Transaction not found"},404);
+            const filename=basename(decodeURIComponent(String(req.headers["x-file-name"]||"receipt")));
+            const mimeType=String(req.headers["content-type"]||"application/octet-stream");
+            const body=await readBody(req);
+            if (!body.length) return sendJson(res,{error:"Receipt file is empty"},400);
+            const result=database.prepare("INSERT INTO transaction_attachments (transaction_id, filename, mime_type) VALUES (?, ?, ?)").run(transactionId,filename,mimeType);
+            const storedName=`${result.lastInsertRowid}-${filename}`;
+            writeFileSync(join(receiptsDirectory,storedName),body);
+            database.prepare("UPDATE transaction_attachments SET stored_name = ? WHERE id = ?").run(storedName,result.lastInsertRowid);
+            return sendJson(res,{ok:true,id:Number(result.lastInsertRowid)},201);
+          }
+          if (req.method==="DELETE"&&match) {
+            const receipt=database.prepare("SELECT stored_name AS storedName FROM transaction_attachments WHERE id = ?").get(Number(match[1]));
+            database.prepare("DELETE FROM transaction_attachments WHERE id = ?").run(Number(match[1]));
+            if (receipt?.storedName&&existsSync(join(receiptsDirectory,receipt.storedName))) {
+              const {unlinkSync}=await import("node:fs");
+              unlinkSync(join(receiptsDirectory,receipt.storedName));
+            }
+            return sendJson(res,{ok:true});
+          }
+          next();
+        } catch(error) {
+          sendJson(res,{error:error.message},400);
+        }
+      });
+      server.middlewares.use("/api/documents", async (req,res,next)=>{
+        try {
+          if (req.method==="GET"&&(req.url==="/"||req.url.startsWith("/?"))) {
+            const type=new URL(req.url,"http://local").searchParams.get("type");
+            const documents=type
+              ? database.prepare("SELECT id, type, filename, mime_type AS mimeType, title, document_date AS documentDate, employer, gross, net, tax, amount, category, notes, created_at AS createdAt FROM documents WHERE type = ? ORDER BY document_date DESC, id DESC").all(type)
+              : database.prepare("SELECT id, type, filename, mime_type AS mimeType, title, document_date AS documentDate, employer, gross, net, tax, amount, category, notes, created_at AS createdAt FROM documents ORDER BY document_date DESC, id DESC").all();
+            return sendJson(res,{documents});
+          }
+          let match=req.url.match(/^\/file\/(\d+)$/);
+          if (req.method==="GET"&&match) {
+            const document=database.prepare("SELECT filename, stored_name AS storedName, mime_type AS mimeType FROM documents WHERE id = ?").get(Number(match[1]));
+            if (!document?.storedName||!existsSync(join(documentsDirectory,document.storedName))) return sendJson(res,{error:"Document file not found"},404);
+            res.statusCode=200;
+            res.setHeader("Content-Type",document.mimeType);
+            res.setHeader("Content-Disposition",`inline; filename="${document.filename.replaceAll('"',"")}"`);
+            return res.end(readFileSync(join(documentsDirectory,document.storedName)));
+          }
+          match=req.url.match(/^\/(payslip|deduction)$/);
+          if (req.method==="POST"&&match) {
+            const type=match[1];
+            const meta=JSON.parse(decodeURIComponent(String(req.headers["x-document-meta"]||"%7B%7D")));
+            const filename=basename(decodeURIComponent(String(req.headers["x-file-name"]||"")));
+            const mimeType=String(req.headers["content-type"]||"application/octet-stream");
+            const body=await readBody(req);
+            if (!String(meta.documentDate||"").match(/^\d{4}-\d{2}-\d{2}$/)) return sendJson(res,{error:"A valid document date is required"},400);
+            if (type==="payslip"&&!body.length) return sendJson(res,{error:"Choose a pay slip file"},400);
+            const result=database.prepare(`INSERT INTO documents (type, filename, mime_type, title, document_date, employer, gross, net, tax, amount, category, notes)
+              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(type,filename,mimeType,String(meta.title||"").trim(),meta.documentDate,String(meta.employer||"").trim(),Number(meta.gross)||0,Number(meta.net)||0,Number(meta.tax)||0,Number(meta.amount)||0,String(meta.category||"").trim(),String(meta.notes||"").trim());
+            if (body.length&&filename) {
+              const storedName=`${result.lastInsertRowid}-${filename}`;
+              writeFileSync(join(documentsDirectory,storedName),body);
+              database.prepare("UPDATE documents SET stored_name = ? WHERE id = ?").run(storedName,result.lastInsertRowid);
+            }
+            return sendJson(res,{ok:true,id:Number(result.lastInsertRowid)},201);
+          }
+          match=req.url.match(/^\/(\d+)$/);
+          if (req.method==="DELETE"&&match) {
+            const document=database.prepare("SELECT stored_name AS storedName FROM documents WHERE id = ?").get(Number(match[1]));
+            database.prepare("DELETE FROM documents WHERE id = ?").run(Number(match[1]));
+            if (document?.storedName&&existsSync(join(documentsDirectory,document.storedName))) {
+              const {unlinkSync}=await import("node:fs");
+              unlinkSync(join(documentsDirectory,document.storedName));
+            }
+            return sendJson(res,{ok:true});
+          }
+          next();
+        } catch(error) {
+          sendJson(res,{error:error.message},400);
+        }
+      });
       server.middlewares.use("/api/transactions", async (req, res, next) => {
         try {
           if (req.method === "GET" && req.url === "/") {
-            const rows = database.prepare("SELECT id, tx_date AS date, description, category, subcategory, amount, source, is_subscription AS isSubscription, is_excluded AS isExcluded FROM transactions ORDER BY tx_date, id").all();
+            const rows = database.prepare("SELECT id, tx_date AS date, description, category, subcategory, amount, source, is_subscription AS isSubscription, is_excluded AS isExcluded, (SELECT COUNT(*) FROM transaction_attachments WHERE transaction_id = transactions.id) AS receiptCount FROM transactions ORDER BY tx_date, id").all();
             return sendJson(res, {transactions:rows});
           }
           if (req.method === "POST" && req.url === "/") {
@@ -242,7 +446,7 @@ function localDataServices() {
               database.exec("ROLLBACK");
               throw error;
             }
-            const rows = database.prepare("SELECT id, tx_date AS date, description, category, subcategory, amount, source, is_subscription AS isSubscription, is_excluded AS isExcluded FROM transactions ORDER BY tx_date, id").all();
+            const rows = database.prepare("SELECT id, tx_date AS date, description, category, subcategory, amount, source, is_subscription AS isSubscription, is_excluded AS isExcluded, (SELECT COUNT(*) FROM transaction_attachments WHERE transaction_id = transactions.id) AS receiptCount FROM transactions ORDER BY tx_date, id").all();
             return sendJson(res, {transactions:rows}, 201);
           }
           if (req.method === "PATCH" && req.url === "/bulk") {
@@ -313,6 +517,34 @@ function localDataServices() {
             return sendJson(res,{categories:rows},201);
           }
           const match=req.url.match(/^\/(\d+)$/);
+          if (req.method === "PATCH" && match) {
+            const id=Number(match[1]);
+            const {name}=JSON.parse((await readBody(req,1024*20)).toString());
+            const nextName=String(name||"").trim();
+            if (!nextName) return sendJson(res,{error:"Name is required"},400);
+            const category=database.prepare("SELECT id, name, parent_id AS parentId FROM categories WHERE id = ?").get(id);
+            if (!category) return sendJson(res,{error:"Category not found"},404);
+            const duplicate=category.parentId
+              ? database.prepare("SELECT id FROM categories WHERE name = ? AND parent_id = ? AND id != ?").get(nextName,category.parentId,id)
+              : database.prepare("SELECT id FROM categories WHERE name = ? AND parent_id IS NULL AND id != ?").get(nextName,id);
+            if (duplicate) return sendJson(res,{error:"That name is already in use"},409);
+            database.exec("BEGIN");
+            try {
+              if (category.parentId) {
+                const parent=database.prepare("SELECT name FROM categories WHERE id = ?").get(category.parentId);
+                if (parent) database.prepare("UPDATE transactions SET subcategory = ? WHERE category = ? AND subcategory = ?").run(nextName,parent.name,category.name);
+              } else {
+                database.prepare("UPDATE transactions SET category = ? WHERE category = ?").run(nextName,category.name);
+              }
+              database.prepare("UPDATE categories SET name = ? WHERE id = ?").run(nextName,id);
+              database.exec("COMMIT");
+            } catch(error) {
+              database.exec("ROLLBACK");
+              throw error;
+            }
+            const rows=database.prepare("SELECT id, name, parent_id AS parentId FROM categories ORDER BY parent_id IS NOT NULL, name").all();
+            return sendJson(res,{categories:rows});
+          }
           if (req.method === "DELETE" && match) {
             const category=database.prepare("SELECT id, name, parent_id AS parentId FROM categories WHERE id = ?").get(Number(match[1]));
             if (!category) return sendJson(res,{error:"Category not found"},404);

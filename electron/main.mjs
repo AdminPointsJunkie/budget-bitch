@@ -42,7 +42,7 @@ async function startLocalServer() {
   const dataDirectory=join(app.getPath("userData"),"data");
   mkdirSync(dataDirectory,{recursive:true});
   if (!existsSync(vitePath)) throw new Error(`Missing application service: ${vitePath}`);
-  localServer=spawn(process.execPath,[vitePath,"--host","127.0.0.1","--port",String(port),"--strictPort"],{
+  localServer=spawn(process.execPath,[vitePath,"--configLoader","runner","--host","127.0.0.1","--port",String(port),"--strictPort"],{
     cwd:appPath,
     env:{
       ...process.env,
