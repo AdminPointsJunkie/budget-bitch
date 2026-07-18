@@ -238,8 +238,33 @@
   align-items: center;
   display: grid;
   gap: 10px;
-  grid-template-columns: minmax(200px, 1fr) 145px 120px auto auto;
+  grid-template-columns: minmax(200px, 1fr) auto 145px 120px auto;
   margin-bottom: 18px;
+}
+
+.latest-import-filter {
+  align-items: center;
+  background: #f4f5ff;
+  border: 1px solid #d8dcff;
+  border-radius: 8px;
+  color: #5968ed;
+  display: flex;
+  gap: 6px;
+  min-height: 38px;
+  padding: 0 11px;
+  white-space: nowrap;
+}
+
+.latest-import-filter.active {
+  background: #5968ed;
+  border-color: #5968ed;
+  color: white;
+}
+
+.latest-import-filter strong {
+  background: rgba(255,255,255,.22);
+  border-radius: 99px;
+  padding: 2px 6px;
 }
 
 .category-toolbar input,

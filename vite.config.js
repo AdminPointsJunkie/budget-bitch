@@ -79,6 +79,16 @@ database.exec(`
 `);
 database.exec("CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)");
 database.exec("CREATE TABLE IF NOT EXISTS statements (filename TEXT PRIMARY KEY, imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP)");
+database.exec(`CREATE TABLE IF NOT EXISTS import_batches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  label TEXT NOT NULL DEFAULT 'Imported transactions',
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+)`);
+database.exec(`CREATE TABLE IF NOT EXISTS import_batch_transactions (
+  batch_id INTEGER NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE,
+  transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+  PRIMARY KEY (batch_id, transaction_id)
+)`);
 database.exec(`CREATE TABLE IF NOT EXISTS transaction_attachments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
@@ -113,6 +123,17 @@ for (const filename of knownStatementFiles) {
   if (!existsSync(storedPath)&&existsSync(downloadPath)) copyFileSync(downloadPath,storedPath);
   if (existsSync(storedPath)) rememberStatement.run(filename);
 }
+if (!database.prepare("SELECT COUNT(*) AS count FROM import_batches").get().count) {
+  const latestStatement=database.prepare("SELECT filename FROM statements ORDER BY imported_at DESC LIMIT 1").get();
+  if (latestStatement) {
+    const transactionIds=database.prepare("SELECT id FROM transactions WHERE source = ? ORDER BY id").all(latestStatement.filename);
+    if (transactionIds.length) {
+      const batch=database.prepare("INSERT INTO import_batches (label) VALUES (?)").run(latestStatement.filename);
+      const link=database.prepare("INSERT OR IGNORE INTO import_batch_transactions (batch_id, transaction_id) VALUES (?, ?)");
+      transactionIds.forEach(({id})=>link.run(batch.lastInsertRowid,id));
+    }
+  }
+}
 database.exec(`CREATE TABLE IF NOT EXISTS accounts (
   id TEXT PRIMARY KEY,
   bank TEXT NOT NULL,
@@ -139,9 +160,10 @@ for (const duplicate of duplicateParents) {
 }
 database.exec("DELETE FROM categories WHERE id NOT IN (SELECT MIN(id) FROM categories GROUP BY name, COALESCE(parent_id, 0))");
 database.exec("CREATE UNIQUE INDEX IF NOT EXISTS categories_unique_name_parent ON categories(name, COALESCE(parent_id, 0))");
-const defaultCategories = ["Housing","Groceries","Dining","Transport","Utilities","Shopping","Entertainment","Health","Insurance","Transfers","Income","Other"];
+const defaultCategories = ["Uncategorised","Housing","Groceries","Dining","Transport","Utilities","Shopping","Entertainment","Health","Insurance","Transfers","Income","Other"];
 const seedCategory = database.prepare("INSERT OR IGNORE INTO categories (name, parent_id) VALUES (?, NULL)");
 if (!database.prepare("SELECT COUNT(*) AS count FROM categories").get().count) defaultCategories.forEach(name=>seedCategory.run(name));
+seedCategory.run("Uncategorised");
 if (!database.prepare("SELECT value FROM app_meta WHERE key = 'interest_categories_v1'").get()) {
   database.prepare("INSERT OR IGNORE INTO categories (name, parent_id) VALUES ('Interest', NULL)").run();
   const interestId=database.prepare("SELECT id FROM categories WHERE name = 'Interest' AND parent_id IS NULL").get().id;
@@ -230,6 +252,16 @@ function initializeBlankLedger(id) {
     CREATE UNIQUE INDEX IF NOT EXISTS categories_unique_name_parent ON categories(name, COALESCE(parent_id, 0));
     CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     CREATE TABLE IF NOT EXISTS statements (filename TEXT PRIMARY KEY, imported_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP);
+    CREATE TABLE IF NOT EXISTS import_batches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      label TEXT NOT NULL DEFAULT 'Imported transactions',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS import_batch_transactions (
+      batch_id INTEGER NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE,
+      transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+      PRIMARY KEY (batch_id, transaction_id)
+    );
     CREATE TABLE IF NOT EXISTS transaction_attachments (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
@@ -273,12 +305,28 @@ function initializeBlankLedger(id) {
   ledgerDatabases.set(id,ledgerDatabase);
   return ledgerDatabase;
 }
+function ensureImportTables(ledgerDatabase) {
+  ledgerDatabase.exec(`
+    CREATE TABLE IF NOT EXISTS import_batches (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      label TEXT NOT NULL DEFAULT 'Imported transactions',
+      created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS import_batch_transactions (
+      batch_id INTEGER NOT NULL REFERENCES import_batches(id) ON DELETE CASCADE,
+      transaction_id INTEGER NOT NULL REFERENCES transactions(id) ON DELETE CASCADE,
+      PRIMARY KEY (batch_id, transaction_id)
+    );
+  `);
+  ledgerDatabase.prepare("INSERT OR IGNORE INTO categories (name, parent_id) VALUES ('Uncategorised', NULL)").run();
+}
 function databaseForLedger(id) {
   const ledger=ledgerRecord(id);
   if (ledgerDatabases.has(ledger.id)) return ledgerDatabases.get(ledger.id);
   const path=join(ledgerPaths(ledger.id).root,"ledgerly.db");
   if (!existsSync(path)) return initializeBlankLedger(ledger.id);
   const ledgerDatabase=new DatabaseSync(path);
+  ensureImportTables(ledgerDatabase);
   ledgerDatabases.set(ledger.id,ledgerDatabase);
   return ledgerDatabase;
 }
@@ -584,6 +632,20 @@ function localDataServices() {
         child.unref();
         sendJson(res,{ok:true});
       });
+      server.middlewares.use("/api/imports",(req,res,next)=>{
+        try {
+          const database=databaseForLedger(ledgerIdForRequest(req));
+          if (req.method==="GET"&&req.url==="/latest") {
+            const batch=database.prepare("SELECT id, label, created_at AS createdAt FROM import_batches ORDER BY id DESC LIMIT 1").get();
+            if (!batch) return sendJson(res,{latestImport:null});
+            const transactionIds=database.prepare("SELECT transaction_id AS id FROM import_batch_transactions WHERE batch_id = ? ORDER BY transaction_id").all(batch.id).map(row=>row.id);
+            return sendJson(res,{latestImport:{...batch,transactionIds}});
+          }
+          next();
+        } catch(error) {
+          sendJson(res,{error:error.message},400);
+        }
+      });
       server.middlewares.use("/api/transactions", async (req, res, next) => {
         try {
           const database=databaseForLedger(ledgerIdForRequest(req));
@@ -597,20 +659,27 @@ function localDataServices() {
             const insert = database.prepare("INSERT OR IGNORE INTO transactions (tx_date, description, category, subcategory, amount, source, fingerprint, is_subscription, is_excluded) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
             const existingByFingerprint=database.prepare("SELECT id, source FROM transactions WHERE fingerprint = ?");
             const updatePrimarySource=database.prepare("UPDATE transactions SET source = ? WHERE id = ?");
+            const createBatch=database.prepare("INSERT INTO import_batches (label) VALUES (?)");
+            const linkBatchTransaction=database.prepare("INSERT OR IGNORE INTO import_batch_transactions (batch_id, transaction_id) VALUES (?, ?)");
+            const sourceNames=[...new Set(transactions.map(transaction=>String(transaction.source||"").trim()).filter(Boolean))];
+            const batchLabel=sourceNames.length===1?sourceNames[0]:sourceNames.length?`${sourceNames.length} statements`:"Imported transactions";
             let insertedCount=0,matchedCount=0,linkedCount=0;
+            let batchId=null;
             database.exec("BEGIN");
             try {
+              batchId=Number(createBatch.run(batchLabel).lastInsertRowid);
               for (const transaction of transactions) {
                 const source = transaction.source || "";
                 const amount=/tesla payment/i.test(transaction.description)?-Math.abs(transaction.amount):transaction.amount;
                 const fingerprint = transactionFingerprint(transaction.date,transaction.description,amount);
-                const interest=interestClassification(transaction.description,amount,source);
-                const result=insert.run(transaction.date, transaction.description, interest?.category||transaction.category, interest?.subcategory||transaction.subcategory||"", amount, source, fingerprint, transaction.isSubscription?1:0, transaction.isExcluded?1:0);
+                const result=insert.run(transaction.date, transaction.description, "Uncategorised", "", amount, source, fingerprint, transaction.isSubscription?1:0, transaction.isExcluded?1:0);
                 if (result.changes) {
                   insertedCount+=1;
+                  linkBatchTransaction.run(batchId,Number(result.lastInsertRowid));
                 } else {
                   matchedCount+=1;
                   const existing=existingByFingerprint.get(fingerprint);
+                  if (existing) linkBatchTransaction.run(batchId,existing.id);
                   if (existing && /\.pdf$/i.test(source) && (!existing.source || /\.(?:csv|xlsx?|ofx)$/i.test(existing.source))) {
                     updatePrimarySource.run(source,existing.id);
                     linkedCount+=1;
@@ -623,7 +692,8 @@ function localDataServices() {
               throw error;
             }
             const rows = database.prepare("SELECT id, tx_date AS date, description, category, subcategory, amount, source, is_subscription AS isSubscription, is_excluded AS isExcluded, (SELECT COUNT(*) FROM transaction_attachments WHERE transaction_id = transactions.id) AS receiptCount FROM transactions ORDER BY tx_date, id").all();
-            return sendJson(res, {transactions:rows,imported:{inserted:insertedCount,matched:matchedCount,linked:linkedCount}}, 201);
+            const transactionIds=database.prepare("SELECT transaction_id AS id FROM import_batch_transactions WHERE batch_id = ? ORDER BY transaction_id").all(batchId).map(row=>row.id);
+            return sendJson(res, {transactions:rows,imported:{inserted:insertedCount,matched:matchedCount,linked:linkedCount},latestImport:{id:batchId,label:batchLabel,transactionIds}}, 201);
           }
           if (req.method === "PATCH" && req.url === "/bulk") {
             const {ids=[],category,subcategory=""} = JSON.parse((await readBody(req, 1024 * 1024)).toString());
@@ -701,6 +771,7 @@ function localDataServices() {
             if (!nextName) return sendJson(res,{error:"Name is required"},400);
             const category=database.prepare("SELECT id, name, parent_id AS parentId FROM categories WHERE id = ?").get(id);
             if (!category) return sendJson(res,{error:"Category not found"},404);
+            if (!category.parentId&&["Other","Uncategorised"].includes(category.name)) return sendJson(res,{error:`${category.name} is a system category and cannot be renamed`},400);
             const duplicate=category.parentId
               ? database.prepare("SELECT id FROM categories WHERE name = ? AND parent_id = ? AND id != ?").get(nextName,category.parentId,id)
               : database.prepare("SELECT id FROM categories WHERE name = ? AND parent_id IS NULL AND id != ?").get(nextName,id);
@@ -725,7 +796,7 @@ function localDataServices() {
           if (req.method === "DELETE" && match) {
             const category=database.prepare("SELECT id, name, parent_id AS parentId FROM categories WHERE id = ?").get(Number(match[1]));
             if (!category) return sendJson(res,{error:"Category not found"},404);
-            if (!category.parentId && category.name==="Other") return sendJson(res,{error:"Other is the fallback category and cannot be deleted"},400);
+            if (!category.parentId && ["Other","Uncategorised"].includes(category.name)) return sendJson(res,{error:`${category.name} is a system category and cannot be deleted`},400);
             if (category.parentId) {
               const parent=database.prepare("SELECT name FROM categories WHERE id = ?").get(category.parentId);
               if (parent) database.prepare("UPDATE transactions SET subcategory = '' WHERE category = ? AND subcategory = ?").run(parent.name,category.name);
