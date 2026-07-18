@@ -123,6 +123,53 @@ function statementYear(text, fallback = new Date().getFullYear()) {
   const years = [...text.matchAll(/\b(20\d{2})\b/g)].map(m=>Number(m[1]));
   return years.find(y=>y>=2020 && y<=new Date().getFullYear()+1) || fallback;
 }
+function parseWestpacStatement(lines) {
+  const blocks=[];
+  let current=null;
+  const finish=()=>{if(current) blocks.push(current);current=null};
+  const boilerplate=/^(?:Westpac Choice|TRANSACTIONS|DATE TRANSACTION DESCRIPTION|Please check all entries|Statement No\.|Westpac Banking Corporation)/i;
+  for (const raw of lines) {
+    const line=raw.replace(/\s+/g," ").trim();
+    const dated=line.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})\s+(.+)$/);
+    if (dated) {
+      finish();
+      current={date:isoDate(2000+Number(dated[3]),Number(dated[2])-1,dated[1]),parts:[dated[4]]};
+    } else if (current && line && !boilerplate.test(line)) {
+      current.parts.push(line);
+    }
+  }
+  finish();
+
+  const rows=[];
+  let previousBalance=null;
+  for (const block of blocks) {
+    const text=block.parts.join(" ");
+    const amounts=[...text.matchAll(MONEY_AT_END)];
+    if (/STATEMENT OPENING BALANCE/i.test(text)) {
+      previousBalance=amounts.length?toNumber(amounts.at(-1)[0]):previousBalance;
+      continue;
+    }
+    if (/CLOSING BALANCE/i.test(text)) break;
+    if (amounts.length<2) continue;
+    const transactionMatch=amounts.at(-2);
+    const transactionAmount=Math.abs(toNumber(transactionMatch[0]));
+    const balance=toNumber(amounts.at(-1)[0]);
+    const description=text.slice(0,transactionMatch.index).replace(/\s+/g," ").trim();
+    if (!description || !transactionAmount) {
+      previousBalance=balance;
+      continue;
+    }
+    const movement=previousBalance===null?null:balance-previousBalance;
+    const movementMatches=movement!==null&&Math.abs(Math.abs(movement)-transactionAmount)<=0.03;
+    const credit=movementMatches
+      ? movement>0
+      : /deposit|credit|refund|cashback|interest paid/i.test(description);
+    const amount=(credit?1:-1)*transactionAmount;
+    rows.push({date:block.date,description,amount,category:detectCategory(description,amount)});
+    previousBalance=balance;
+  }
+  return rows;
+}
 function parsePdfStatement(lines) {
   const fullText = lines.join("\n");
   const year = statementYear(fullText);
@@ -138,6 +185,8 @@ function parsePdfStatement(lines) {
   const rows = [];
   let currentDate = "";
   let lastRow = null;
+
+  if (isWestpac) return parseWestpacStatement(lines);
 
   for (const raw of lines) {
     const line = raw.replace(/\s+/g," ").trim();
@@ -163,16 +212,6 @@ function parsePdfStatement(lines) {
       if (isMortgage) amount = /repayment/i.test(description) ? -Math.abs(amount) : -Math.abs(amount);
       const category = isMortgage ? "Housing" : detectCategory(description,amount);
       lastRow = {date:isoDate(match[3],Number(match[2])-1,match[1]),description,amount,category};
-      rows.push(lastRow); continue;
-    }
-
-    if (isWestpac && (match=line.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})\s+(.+)$/))) {
-      const amounts = match[4].match(MONEY_AT_END) || [];
-      if (!amounts.length) continue;
-      const description = match[4].slice(0,match[4].lastIndexOf(amounts[0])).trim();
-      const credit = /deposit|credit|refund|interest paid/i.test(description);
-      const amount = (credit?1:-1)*Math.abs(toNumber(amounts.length>1?amounts[amounts.length-2]:amounts[0]));
-      lastRow = {date:isoDate(2000+Number(match[3]),Number(match[2])-1,match[1]),description,amount,category:detectCategory(description,amount)};
       rows.push(lastRow); continue;
     }
 
@@ -291,6 +330,7 @@ function App() {
   const [tab, setTab] = useState("analysis");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
+  const [notice,setNotice] = useState("");
   const [dragging, setDragging] = useState(false);
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
@@ -393,15 +433,19 @@ function App() {
   async function handleFiles(files) {
     const picked = [...files];
     if (!picked.length) return;
-    setLoading(true); setError("");
+    setLoading(true); setError(""); setNotice("");
     try {
       const sets = await Promise.all(picked.map(async file => (await parseFile(file)).map(transaction=>({...transaction,source:transaction.source||file.name}))));
       const merged = sets.flat().sort((a,b)=>a.date.localeCompare(b.date));
       if (!merged.length) throw new Error("No transactions were found. Check that your file has date, description and amount columns.");
       const response = await apiFetch("/api/transactions", {method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({transactions:merged})});
       if (!response.ok) throw new Error("Transactions were read but could not be saved to the local database.");
-      const { transactions:stored } = await response.json();
+      const { transactions:stored,imported } = await response.json();
       setTransactions(stored); setFileNames([...new Set(stored.map(row=>row.source).filter(Boolean))]); setView("dashboard");
+      if (imported) {
+        const matched=imported.matched||0;
+        setNotice(`${imported.inserted||0} new transaction${imported.inserted===1?"":"s"} imported${matched?`; ${matched} already existed and ${imported.linked||0} linked to the statement`:""}.`);
+      }
     } catch(e) {
       const message = String(e?.message || "");
       setError(
@@ -543,8 +587,8 @@ function App() {
     setTransactions(current=>current.map(transaction=>sameTransaction(transaction,row)?{...transaction,receiptCount:count}:transaction));
   }
   const ledgerControls={ledgers,activeLedgerId,switchLedger,createLedger,renameLedger};
-  if (view === "dashboard") return <Dashboard {...{...ledgerControls,transactions:filteredTransactions,totalTransactions:transactions.length,updateCategory,updateSubcategory,updateBulkCategory,updateSubscription,updateExcluded,updateAmount,updateReceiptCount,deleteTransaction,deleteTransactions,customCategories,addCategory,renameCategory,deleteCategory,analysis,tab,setTab,fileNames,exportExcel,exportPdf,availableMonths,dateFrom,setDateFrom,dateTo,setDateTo,input,handleFiles,loading,error,onReset:()=>{setView("landing");setTransactions([]);setDateFrom("");setDateTo("")}}}/>;
-  return <Landing {...{...ledgerControls,input,handleFiles,loading,error,dragging,setDragging,onSample:()=>{setTransactions(sample);setFileNames(["Sample statement"]);setView("dashboard")}}}/>;
+  if (view === "dashboard") return <Dashboard {...{...ledgerControls,transactions:filteredTransactions,totalTransactions:transactions.length,updateCategory,updateSubcategory,updateBulkCategory,updateSubscription,updateExcluded,updateAmount,updateReceiptCount,deleteTransaction,deleteTransactions,customCategories,addCategory,renameCategory,deleteCategory,analysis,tab,setTab,fileNames,exportExcel,exportPdf,availableMonths,dateFrom,setDateFrom,dateTo,setDateTo,input,handleFiles,loading,error,notice,onReset:()=>{setView("landing");setTransactions([]);setDateFrom("");setDateTo("")}}}/>;
+  return <Landing {...{...ledgerControls,input,handleFiles,loading,error,notice,dragging,setDragging,onSample:()=>{setTransactions(sample);setFileNames(["Sample statement"]);setView("dashboard")}}}/>;
 }
 
 function Brand() {
@@ -560,7 +604,7 @@ function LedgerSwitcher({ledgers,activeLedgerId,switchLedger,createLedger,rename
     <div><button onClick={createLedger}>+ New</button><button onClick={renameLedger} disabled={!current}>Rename</button></div>
   </div>;
 }
-function Landing({input,handleFiles,loading,error,dragging,setDragging,onSample,ledgers,activeLedgerId,switchLedger,createLedger,renameLedger}) {
+function Landing({input,handleFiles,loading,error,notice,dragging,setDragging,onSample,ledgers,activeLedgerId,switchLedger,createLedger,renameLedger}) {
   return <div className="landing">
     <nav><Brand/><LedgerSwitcher compact {...{ledgers,activeLedgerId,switchLedger,createLedger,renameLedger}}/><div className="navlinks"><a href="#how">How it works</a><a href="#privacy">Privacy</a><button className="nav-cta" onClick={()=>input.current.click()}>Start analysing <ArrowRight size={16}/></button></div></nav>
     <main>
@@ -577,6 +621,7 @@ function Landing({input,handleFiles,loading,error,dragging,setDragging,onSample,
           {loading && <div className="progress"><i/></div>}
         </div>
         {error && <div className="error"><X size={16}/>{error}</div>}
+        {notice && <div className="import-notice"><Check size={16}/>{notice}</div>}
         <button className="sample-link" onClick={onSample}>Explore with sample data <ChevronRight size={16}/></button>
         <div className="trust-row"><span><ShieldCheck size={18}/> Processed on your Mac</span><span><LockKeyhole size={18}/> Stored locally only</span><span><Check size={18}/> No sign-up</span></div>
       </section>
@@ -599,7 +644,7 @@ function Landing({input,handleFiles,loading,error,dragging,setDragging,onSample,
 }
 function Step({n,icon,title,text}) { return <article className="step"><span className="step-number">{n}</span><div className="step-icon">{icon}</div><h3>{title}</h3><p>{text}</p></article> }
 
-function Dashboard({transactions,totalTransactions,updateCategory,updateSubcategory,updateBulkCategory,updateSubscription,updateExcluded,updateAmount,updateReceiptCount,deleteTransaction,deleteTransactions,customCategories,addCategory,renameCategory,deleteCategory,analysis,tab,setTab,fileNames,exportExcel,exportPdf,availableMonths,dateFrom,setDateFrom,dateTo,setDateTo,input,handleFiles,loading,error,onReset,ledgers,activeLedgerId,switchLedger,createLedger,renameLedger}) {
+function Dashboard({transactions,totalTransactions,updateCategory,updateSubcategory,updateBulkCategory,updateSubscription,updateExcluded,updateAmount,updateReceiptCount,deleteTransaction,deleteTransactions,customCategories,addCategory,renameCategory,deleteCategory,analysis,tab,setTab,fileNames,exportExcel,exportPdf,availableMonths,dateFrom,setDateFrom,dateTo,setDateTo,input,handleFiles,loading,error,notice,onReset,ledgers,activeLedgerId,switchLedger,createLedger,renameLedger}) {
   const cats = Object.entries(analysis.byCategory).sort((a,b)=>b[1]-a[1]);
   const donut = {labels:cats.map(x=>x[0]),datasets:[{data:cats.map(x=>x[1]),backgroundColor:COLORS,borderWidth:0,hoverOffset:6}]};
   const bars = {labels:analysis.monthly.map(x=>new Date(x.month+"-02").toLocaleDateString("en-AU",{month:"short"})),datasets:[{label:"Income",data:analysis.monthly.map(x=>x.income),backgroundColor:"#B9E9DE",borderRadius:7},{label:"Spending",data:analysis.monthly.map(x=>x.expense),backgroundColor:"#6574F7",borderRadius:7}]};
@@ -612,13 +657,14 @@ function Dashboard({transactions,totalTransactions,updateCategory,updateSubcateg
       <input ref={input} type="file" hidden multiple accept=".csv,.xlsx,.ofx,.pdf" onChange={e=>{handleFiles(e.target.files);e.target.value=""}}/>
       <header><div><span className="overline">YOUR MONEY SNAPSHOT</span><h1>{tab==="analysis"?"Spending analysis":tab==="budget"?"Monthly budget":tab==="categorise"?"Categorise transactions":tab==="accounts"?"Accounts":tab==="statements"?"Statements":tab==="paytax"?"Pay & tax":"Transactions"}</h1></div><div className="header-tools"><div className="date-filters"><label><span>From</span><select value={dateFrom} onChange={e=>{setDateFrom(e.target.value);if(dateTo&&e.target.value>dateTo)setDateTo(e.target.value)}}><option value="">First month</option>{availableMonths.map(month=><option key={month} value={month}>{new Date(month+"-02").toLocaleDateString("en-AU",{month:"short",year:"numeric"})}</option>)}</select></label><label><span>To</span><select value={dateTo} onChange={e=>{setDateTo(e.target.value);if(dateFrom&&e.target.value<dateFrom)setDateFrom(e.target.value)}}><option value="">Latest month</option>{availableMonths.map(month=><option key={month} value={month}>{new Date(month+"-02").toLocaleDateString("en-AU",{month:"short",year:"numeric"})}</option>)}</select></label></div><div className="actions"><button className="import-button" disabled={loading} onClick={()=>input.current?.click()}><UploadCloud size={16}/>{loading?"Importing…":"Import statements"}</button><button onClick={exportPdf}><FileText size={16}/>PDF</button><button className="primary" onClick={exportExcel}><Download size={16}/>Export Excel</button></div></div></header>
       {error&&<div className="error dashboard-error"><X size={15}/>{error}</div>}
+      {notice&&<div className="import-notice dashboard-notice"><Check size={15}/>{notice}</div>}
       {tab==="analysis" && <><div className="metric-grid"><Metric label="Average monthly spend" value={fmt.format(analysis.average)} note={`${analysis.months.length} month view`} icon={<TrendingDown/>}/><Metric label="Average monthly income" value={fmt.format(analysis.income/monthCount)} note={`${fmt.format(analysis.income-analysis.expenses)} net total`} icon={<WalletCards/>}/><Metric label="Transactions" value={transactions.length} note={`${cats.length} spending categories`} icon={<FileSpreadsheet/>}/></div>
       <div className="chart-grid"><section className="panel"><div className="panel-title"><div><span>SPENDING MIX</span><h3>Where your money goes</h3></div></div><div className="donut-wrap"><Doughnut key={donutRevision} redraw data={donut} options={{cutout:"68%",plugins:{legend:{display:false}}}}/><div className="donut-label"><strong>{fmt.format(analysis.expenses)}</strong><span>total spent</span></div></div><div className="legend">{cats.slice(0,6).map(([c,v],i)=><div key={c}><i style={{background:COLORS[i%COLORS.length]}}/><span>{c}</span><strong>{Math.round(v/analysis.expenses*100)}%</strong></div>)}</div></section>
       <section className="panel wide"><div className="panel-title"><div><span>MONTH BY MONTH</span><h3>Income and spending</h3></div></div><div className="bar-wrap"><Bar key={barRevision} redraw data={bars} options={{maintainAspectRatio:false,plugins:{legend:{position:"bottom",labels:{usePointStyle:true,boxWidth:8}}},scales:{x:{grid:{display:false}},y:{border:{display:false},grid:{color:"#EEF0F5"},ticks:{callback:v=>"$"+v/1000+"k"}}}}}/></div></section></div>
       <section className="panel table-panel"><div className="panel-title"><div><span>CATEGORY &amp; SUBCATEGORY DETAIL</span><h3>Your spending, ranked</h3></div></div><CategoryTable cats={cats} subcategories={analysis.bySubcategory} months={monthCount} total={analysis.expenses} transactions={transactions}/></section></>}
       {tab==="budget" && <Budget cats={cats} months={monthCount} income={analysis.income/monthCount}/>}
       {tab==="transactions" && <Transactions rows={transactions} onCategoryChange={updateCategory}/>}
-      {tab==="categorise" && <Categorise rows={transactions} categories={customCategories} onAddCategory={addCategory} onRenameCategory={renameCategory} onDeleteCategory={deleteCategory} onCategoryChange={updateCategory} onSubcategoryChange={updateSubcategory} onBulkCategoryChange={updateBulkCategory} onSubscriptionChange={updateSubscription} onExcludedChange={updateExcluded} onAmountChange={updateAmount} onReceiptCountChange={updateReceiptCount} onDeleteTransaction={deleteTransaction} onDeleteTransactions={deleteTransactions}/>}
+      {tab==="categorise" && <ViewErrorBoundary><Categorise rows={transactions} categories={customCategories} onAddCategory={addCategory} onRenameCategory={renameCategory} onDeleteCategory={deleteCategory} onCategoryChange={updateCategory} onSubcategoryChange={updateSubcategory} onBulkCategoryChange={updateBulkCategory} onSubscriptionChange={updateSubscription} onExcludedChange={updateExcluded} onAmountChange={updateAmount} onReceiptCountChange={updateReceiptCount} onDeleteTransaction={deleteTransaction} onDeleteTransactions={deleteTransactions}/></ViewErrorBoundary>}
       {tab==="accounts" && <Accounts/>}
       {tab==="statements" && <ViewErrorBoundary><Statements/></ViewErrorBoundary>}
       {tab==="paytax" && <PayAndTax/>}

@@ -595,6 +595,9 @@ function localDataServices() {
             const { transactions = [] } = JSON.parse((await readBody(req)).toString());
             seedDetectedAccounts(database,transactions.map(transaction=>transaction.source||""));
             const insert = database.prepare("INSERT OR IGNORE INTO transactions (tx_date, description, category, subcategory, amount, source, fingerprint, is_subscription, is_excluded) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
+            const existingByFingerprint=database.prepare("SELECT id, source FROM transactions WHERE fingerprint = ?");
+            const updatePrimarySource=database.prepare("UPDATE transactions SET source = ? WHERE id = ?");
+            let insertedCount=0,matchedCount=0,linkedCount=0;
             database.exec("BEGIN");
             try {
               for (const transaction of transactions) {
@@ -602,7 +605,17 @@ function localDataServices() {
                 const amount=/tesla payment/i.test(transaction.description)?-Math.abs(transaction.amount):transaction.amount;
                 const fingerprint = transactionFingerprint(transaction.date,transaction.description,amount);
                 const interest=interestClassification(transaction.description,amount,source);
-                insert.run(transaction.date, transaction.description, interest?.category||transaction.category, interest?.subcategory||transaction.subcategory||"", amount, source, fingerprint, transaction.isSubscription?1:0, transaction.isExcluded?1:0);
+                const result=insert.run(transaction.date, transaction.description, interest?.category||transaction.category, interest?.subcategory||transaction.subcategory||"", amount, source, fingerprint, transaction.isSubscription?1:0, transaction.isExcluded?1:0);
+                if (result.changes) {
+                  insertedCount+=1;
+                } else {
+                  matchedCount+=1;
+                  const existing=existingByFingerprint.get(fingerprint);
+                  if (existing && /\.pdf$/i.test(source) && (!existing.source || /\.(?:csv|xlsx?|ofx)$/i.test(existing.source))) {
+                    updatePrimarySource.run(source,existing.id);
+                    linkedCount+=1;
+                  }
+                }
               }
               database.exec("COMMIT");
             } catch (error) {
@@ -610,7 +623,7 @@ function localDataServices() {
               throw error;
             }
             const rows = database.prepare("SELECT id, tx_date AS date, description, category, subcategory, amount, source, is_subscription AS isSubscription, is_excluded AS isExcluded, (SELECT COUNT(*) FROM transaction_attachments WHERE transaction_id = transactions.id) AS receiptCount FROM transactions ORDER BY tx_date, id").all();
-            return sendJson(res, {transactions:rows}, 201);
+            return sendJson(res, {transactions:rows,imported:{inserted:insertedCount,matched:matchedCount,linked:linkedCount}}, 201);
           }
           if (req.method === "PATCH" && req.url === "/bulk") {
             const {ids=[],category,subcategory=""} = JSON.parse((await readBody(req, 1024 * 1024)).toString());
