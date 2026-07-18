@@ -4,7 +4,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { basename, join } from "node:path";
 import { homedir } from "node:os";
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 
@@ -641,6 +641,18 @@ function localDataServices() {
         child.unref();
         sendJson(res,{ok:true});
       });
+      server.middlewares.use("/api/system/client-error",async(req,res,next)=>{
+        if (req.method!=="POST") return next();
+        try {
+          const payload=JSON.parse((await readBody(req,1024*100)).toString());
+          const directory=join(dataDirectory,"logs");
+          mkdirSync(directory,{recursive:true});
+          appendFileSync(join(directory,"client-errors.log"),`[${new Date().toISOString()}] ${String(payload.context||"client")}\n${String(payload.message||"Unknown error")}\n${String(payload.url||"")}\n\n`);
+          sendJson(res,{ok:true});
+        } catch(error) {
+          sendJson(res,{error:error.message},400);
+        }
+      });
       server.middlewares.use("/api/imports",(req,res,next)=>{
         try {
           const database=databaseForLedger(ledgerIdForRequest(req));
@@ -831,6 +843,7 @@ function localDataServices() {
 }
 
 export default defineConfig({
-  cacheDir:`${dataDirectory}/vite-cache`,
+  cacheDir:`${dataDirectory}/vite-cache-${String(process.env.BUDGET_BITCH_APP_VERSION||"development").replace(/[^a-z0-9.-]/gi,"-")}`,
+  server:{hmr:false,watch:{ignored:["**/*"]}},
   plugins:[react(), localDataServices()]
 });

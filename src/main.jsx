@@ -727,7 +727,7 @@ function Accounts() {
   const [draft,setDraft]=useState({});
   const [error,setError]=useState("");
   const load=()=>apiFetch("/api/accounts").then(response=>response.json()).then(data=>setAccounts(data.accounts||[])).catch(()=>setError("Account details could not be loaded"));
-  useEffect(load,[]);
+  useEffect(()=>{load()},[]);
   const alerts=accounts.filter(account=>account.status!=="current");
   const statusText=account=>account.status==="current"?"Up to date":account.status==="gap"?"Statement gap detected":account.status==="stale"?`Last statement ${account.daysSinceLatest} days ago`:"No statements found";
   const beginEdit=account=>{setEditing(account.id);setDraft({bank:account.bank,name:account.name,accountNumber:account.accountNumber,bsb:account.bsb});setError("")};
@@ -752,7 +752,7 @@ function PayAndTax() {
   const [payFile,setPayFile]=useState(null);
   const [deductionFile,setDeductionFile]=useState(null);
   const load=()=>apiFetch("/api/documents").then(response=>response.json()).then(data=>setDocuments(data.documents||[])).catch(()=>setError("Pay and tax records could not be loaded"));
-  useEffect(load,[]);
+  useEffect(()=>{load()},[]);
   async function upload(type,meta,file) {
     setError("");
     const response=await apiFetch(`/api/documents/${type}`,{method:"POST",headers:{"Content-Type":file?.type||"application/octet-stream","X-File-Name":encodeURIComponent(file?.name||""),"X-Document-Meta":encodeURIComponent(JSON.stringify(meta))},body:file?await file.arrayBuffer():new Uint8Array()});
@@ -811,7 +811,7 @@ function ReceiptModal({row,onClose,onCountChange}) {
   const [error,setError]=useState("");
   const input=useRef();
   const load=()=>apiFetch(`/api/receipts?transactionId=${row.id}`).then(response=>response.json()).then(data=>{setReceipts(data.receipts||[]);onCountChange((data.receipts||[]).length)}).catch(()=>setError("Receipts could not be loaded"));
-  useEffect(load,[row.id]);
+  useEffect(()=>{load()},[row.id]);
   async function attach(file) {
     if (!file) return;
     setError("");
@@ -937,4 +937,19 @@ function Categorise({rows,categories:categoryRecords,latestImport,reviewLatestIm
     <Pager page={page} setPage={setPage} total={visible.length}/>
   </section>;
 }
-createRoot(document.getElementById("root")).render(<App/>);
+function reportClientError(error,context="runtime") {
+  const message=String(error?.stack||error?.message||error||"Unknown client error");
+  window.fetch("/api/system/client-error",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({context,message,url:window.location.href,userAgent:navigator.userAgent})}).catch(()=>{});
+}
+class AppErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state={error:null}; }
+  static getDerivedStateFromError(error) { return {error}; }
+  componentDidCatch(error,details) { reportClientError(`${error?.stack||error}\n${details?.componentStack||""}`,"react-boundary"); }
+  render() {
+    if (this.state.error) return <main className="root-failure"><div><span className="brandmark"><BarChart3 size={22}/></span><h1>Budget Bitch! hit a snag</h1><p>Your data is safe. Reload the app to continue from the local database.</p><button onClick={()=>window.location.reload()}><RefreshCw size={16}/>Reload app</button><small>{this.state.error.message||"Unexpected display error"}</small></div></main>;
+    return this.props.children;
+  }
+}
+window.addEventListener("error",event=>reportClientError(event.error||event.message,"window-error"));
+window.addEventListener("unhandledrejection",event=>reportClientError(event.reason,"unhandled-rejection"));
+createRoot(document.getElementById("root")).render(<AppErrorBoundary><App/></AppErrorBoundary>);
