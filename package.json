@@ -2,7 +2,7 @@
   "name": "budget-bitch",
   "productName": "Budget Bitch!",
   "private": true,
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "A private, local-first statement and budgeting app.",
   "main": "electron/main.mjs",
   "type": "module",

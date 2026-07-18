@@ -550,12 +550,21 @@ function Dashboard({transactions,totalTransactions,updateCategory,updateSubcateg
       {tab==="transactions" && <Transactions rows={transactions} onCategoryChange={updateCategory}/>}
       {tab==="categorise" && <Categorise rows={transactions} categories={customCategories} onAddCategory={addCategory} onRenameCategory={renameCategory} onDeleteCategory={deleteCategory} onCategoryChange={updateCategory} onSubcategoryChange={updateSubcategory} onBulkCategoryChange={updateBulkCategory} onSubscriptionChange={updateSubscription} onExcludedChange={updateExcluded} onAmountChange={updateAmount} onReceiptCountChange={updateReceiptCount} onDeleteTransaction={deleteTransaction} onDeleteTransactions={deleteTransactions}/>}
       {tab==="accounts" && <Accounts/>}
-      {tab==="statements" && <Statements/>}
+      {tab==="statements" && <ViewErrorBoundary><Statements/></ViewErrorBoundary>}
       {tab==="paytax" && <PayAndTax/>}
     </div>
   </div>;
 }
 function Metric({label,value,note,icon}) { return <section className="metric"><div className="metric-icon">{icon}</div><span>{label}</span><strong>{value}</strong><small>{note}</small></section> }
+class ViewErrorBoundary extends React.Component {
+  constructor(props) { super(props); this.state={error:null}; }
+  static getDerivedStateFromError(error) { return {error}; }
+  componentDidCatch(error,details) { console.error("View failed",error,details); }
+  render() {
+    if (this.state.error) return <section className="panel view-error"><FileText size={28}/><h3>This page could not be displayed</h3><p>{this.state.error.message||"An unexpected display error occurred."}</p><button onClick={()=>this.setState({error:null})}>Try again</button></section>;
+    return this.props.children;
+  }
+}
 function CategoryTable({cats,subcategories,months,total,transactions}) {
   const [selected,setSelected]=useState(null);
   useEffect(()=>{
@@ -658,8 +667,12 @@ function DocumentList({documents,onView,onDelete}) {
 function Statements() {
   const [statements,setStatements]=useState([]);
   const [selected,setSelected]=useState("");
-  useEffect(()=>{fetch("/api/statements").then(response=>response.json()).then(data=>setStatements(data.statements||[])).catch(()=>setStatements([]))},[]);
-  if (selected) return <section className="panel statement-viewer"><div className="statement-viewer-head"><div><span>ORIGINAL PDF</span><h3>{statementSourceLabel(selected)}</h3><small>{selected}</small></div><button onClick={()=>setSelected("")}>Back to statements</button></div><iframe title={selected} src={`/api/statements/file/${encodeURIComponent(selected)}`}/></section>;
+  const [loading,setLoading]=useState(true);
+  const [error,setError]=useState("");
+  useEffect(()=>{fetch("/api/statements").then(response=>response.ok?response.json():Promise.reject(new Error("Statement library could not be loaded"))).then(data=>setStatements(data.statements||[])).catch(reason=>setError(reason.message)).finally(()=>setLoading(false))},[]);
+  if (loading) return <section className="panel statements-loading"><RefreshCw size={22}/><strong>Loading statement library…</strong></section>;
+  if (error) return <section className="panel view-error"><FileText size={28}/><h3>Statements could not be loaded</h3><p>{error}</p><button onClick={()=>window.location.reload()}>Reload app</button></section>;
+  if (selected) return <section className="panel statement-viewer"><div className="statement-viewer-head"><div><span>ORIGINAL PDF</span><h3>{statementSourceLabel(selected)}</h3><small>{selected}</small></div><div><a href={`/api/statements/file/${encodeURIComponent(selected)}`} target="_blank" rel="noreferrer">Open separately</a><button onClick={()=>setSelected("")}>Back to statements</button></div></div><iframe title={selected} src={`/api/statements/file/${encodeURIComponent(selected)}`}/></section>;
   return <section className="panel statements-page"><div className="panel-title"><div><span>LOCAL STATEMENT LIBRARY</span><h3>Your imported PDFs</h3><p>Click a statement to view the original PDF. Files stay on this Mac.</p></div></div>{statements.length?<div className="statement-grid">{statements.map(statement=><button key={statement.filename} onClick={()=>setSelected(statement.filename)}><FileText size={22}/><span><strong>{statementSourceLabel(statement.filename)}</strong><small>{statement.filename}</small></span><em>{statement.transactionCount} transaction{statement.transactionCount===1?"":"s"}</em><ChevronRight size={16}/></button>)}</div>:<div className="empty-statements"><FileText size={30}/><strong>No saved PDFs yet</strong><span>Import a PDF statement and it will appear here.</span></div>}</section>;
 }
 function EditableAmount({row,onChange}) {
