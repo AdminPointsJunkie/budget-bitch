@@ -42,6 +42,15 @@ if (!database.prepare("PRAGMA table_info(transactions)").all().some(column=>colu
 }
 const transactionFingerprint = (date,description,amount) =>
   `${date}|${String(description).trim().replace(/\s+/g," ").toUpperCase()}|${Number(amount).toFixed(2)}`;
+function canonicalImportDescription(description,amount) {
+  let value=String(description||"").trim().replace(/\s+/g," ");
+  const trailing=value.match(/(-?\$?[\d,]+\.\d{2})$/);
+  if (trailing) {
+    const trailingAmount=Math.abs(Number(trailing[1].replace(/[$,]/g,"")));
+    if (Number.isFinite(trailingAmount)&&Math.abs(trailingAmount-Math.abs(Number(amount)))<0.005) value=value.slice(0,trailing.index).trim();
+  }
+  return value.toUpperCase();
+}
 const storedTransactions = database.prepare("SELECT id, tx_date AS date, description, category, subcategory, amount, is_subscription AS isSubscription, is_excluded AS isExcluded FROM transactions ORDER BY id").all();
 const transactionGroups = new Map();
 for (const transaction of storedTransactions) {
@@ -658,6 +667,7 @@ function localDataServices() {
             seedDetectedAccounts(database,transactions.map(transaction=>transaction.source||""));
             const insert = database.prepare("INSERT OR IGNORE INTO transactions (tx_date, description, category, subcategory, amount, source, fingerprint, is_subscription, is_excluded) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)");
             const existingByFingerprint=database.prepare("SELECT id, source FROM transactions WHERE fingerprint = ?");
+            const existingByDateAmount=database.prepare("SELECT id, source, description FROM transactions WHERE tx_date = ? AND amount = ?");
             const updatePrimarySource=database.prepare("UPDATE transactions SET source = ? WHERE id = ?");
             const createBatch=database.prepare("INSERT INTO import_batches (label) VALUES (?)");
             const linkBatchTransaction=database.prepare("INSERT OR IGNORE INTO import_batch_transactions (batch_id, transaction_id) VALUES (?, ?)");
@@ -672,15 +682,19 @@ function localDataServices() {
                 const source = transaction.source || "";
                 const amount=/tesla payment/i.test(transaction.description)?-Math.abs(transaction.amount):transaction.amount;
                 const fingerprint = transactionFingerprint(transaction.date,transaction.description,amount);
-                const result=insert.run(transaction.date, transaction.description, "Uncategorised", "", amount, source, fingerprint, transaction.isSubscription?1:0, transaction.isExcluded?1:0);
-                if (result.changes) {
+                const descriptionKey=canonicalImportDescription(transaction.description,amount);
+                let existing=existingByFingerprint.get(fingerprint);
+                if (!existing) {
+                  existing=existingByDateAmount.all(transaction.date,amount).find(candidate=>canonicalImportDescription(candidate.description,amount)===descriptionKey);
+                }
+                if (!existing) {
+                  const result=insert.run(transaction.date, transaction.description, "Uncategorised", "", amount, source, fingerprint, transaction.isSubscription?1:0, transaction.isExcluded?1:0);
                   insertedCount+=1;
                   linkBatchTransaction.run(batchId,Number(result.lastInsertRowid));
                 } else {
                   matchedCount+=1;
-                  const existing=existingByFingerprint.get(fingerprint);
-                  if (existing) linkBatchTransaction.run(batchId,existing.id);
-                  if (existing && /\.pdf$/i.test(source) && (!existing.source || /\.(?:csv|xlsx?|ofx)$/i.test(existing.source))) {
+                  linkBatchTransaction.run(batchId,existing.id);
+                  if (/\.pdf$/i.test(source) && (!existing.source || /\.(?:csv|xlsx?|ofx)$/i.test(existing.source))) {
                     updatePrimarySource.run(source,existing.id);
                     linkedCount+=1;
                   }
